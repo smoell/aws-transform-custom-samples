@@ -320,7 +320,7 @@ quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/mydb
 quarkus.datasource.jdbc.max-size=20
 
 # Hibernate ORM (from persistence.xml properties)
-quarkus.hibernate-orm.database.generation=none
+quarkus.hibernate-orm.schema-management.strategy=none
 quarkus.hibernate-orm.log.sql=false
 
 # HTTP server (from web.xml / jboss-web.xml)
@@ -1425,7 +1425,7 @@ public class AdminResourceTest {
 # Test datasource (H2 in-memory)
 quarkus.datasource.db-kind=h2
 quarkus.datasource.jdbc.url=jdbc:h2:mem:testdb
-quarkus.hibernate-orm.database.generation=drop-and-create
+quarkus.hibernate-orm.schema-management.strategy=drop-and-create
 quarkus.hibernate-orm.log.sql=true
 ```
 
@@ -1450,6 +1450,10 @@ quarkus.hibernate-orm.log.sql=true
     <artifactId>quarkus-rest-qute</artifactId>
 </dependency>
 ```
+
+- **Fix hardcoded context paths in JSF/Facelets templates**: WAR apps have context paths like `/app-name` — since Quarkus serves at root `/`, all hardcoded context references must be removed. Scan: `grep -rn "request.contextPath\|/old-context-path" src/main/resources/` and replace with root paths or `#{request.contextPath}` (which resolves to empty in Quarkus).
+
+- **Verify JSF namespace URIs**: Common corruption during transformation: `jakarta.face.html` (missing 's'). Must be `jakarta.faces.html`, `jakarta.faces.core`, `jakarta.faces.facelets`. Detection: `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` — must return empty.
 
 - **Convert `.xhtml` → `.html` Qute templates** in `src/main/resources/templates/`:
 
@@ -1488,6 +1492,8 @@ quarkus.hibernate-orm.log.sql=true
 </body>
 </html>
 ```
+
+- **Rename dotted @Named beans**: Scan for `@Named` annotations containing dots: `grep -rn '@Named(".*\\..*")' src/main/java/`. For each match, rename to camelCase (e.g., `@Named("public.track")` → `@Named("publicTrack")`), then find and replace all EL references in `.xhtml` templates (`#{old.name.property}` → `#{newName.property}`). This is required because Quarkus/MyFaces uses the Expressly EL implementation which strictly interprets dots as property accessors.
 
 - **`@ManagedBean`/`@Named` backing bean** → `@ApplicationScoped` CDI bean + `Template` injection:
 
@@ -1554,6 +1560,8 @@ public class OrderResource {
     <version>4.0.2</version>
 </dependency>
 ```
+
+- **MyFaces init parameters**: NOT configurable via `quarkus.myfaces.*` in `application.properties`. Set JSF context-params in minimal `src/main/resources/META-INF/web.xml` or rely on MyFaces defaults. Common parameters: `jakarta.faces.PROJECT_STAGE`, `jakarta.faces.FACELETS_SKIP_COMMENTS`.
 
 - Minimal code changes — `faces-config.xml` and `.xhtml` templates remain. `@Named`/`@ViewScoped` beans continue working.
 - **Limitations**: no native compilation support, larger memory footprint, slower startup. Acceptable for migration step but not final state for cloud-native deployment.
@@ -1624,6 +1632,24 @@ Exit: `./mvnw clean verify` passes AND Docker image builds AND `/q/health` retur
 
 **Step 18**: Generate containerization artifacts.
 
+- **Remove old app server Dockerfiles**: Delete root `Dockerfile` (Payara/WildFly/Liberty), `post-boot-commands.asadmin`, `server.xml`, `glassfish-resources.xml`, and other app-server-specific deployment artifacts. Verify: `find . -maxdepth 1 -name "Dockerfile" -o -name "*.asadmin" -o -name "server.xml"` — must return empty.
+
+**Native image compatibility check (if JSF_NEEDED=true):**
+- DO NOT generate Dockerfile.native or Dockerfile.native-micro when JSF_NEEDED=true
+- JSF/MyFaces + PrimeFaces are NOT compatible with GraalVM native compilation due to:
+  - Extensive runtime reflection in the JSF lifecycle
+  - Dynamic proxy generation for managed beans and view scoping
+  - Runtime classpath scanning for tag libraries
+  - Serialization of server-side view state
+- Only generate Dockerfile.jvm for JSF applications
+- Add a comment in the generated Dockerfile.jvm: "# Native compilation not supported for JSF/MyFaces applications"
+- If JSF_NEEDED=false, generate all three Dockerfiles (jvm, native, native-micro)
+
+- **Generate Quarkus Dockerfiles** (conditional on JSF_NEEDED):
+  - `src/main/docker/Dockerfile.jvm` — Standard JVM mode (required for JSF apps)
+  - `src/main/docker/Dockerfile.native` — Multi-stage native build (only if JSF_NEEDED=false)  
+  - `src/main/docker/Dockerfile.native-micro` — Pre-built native binary (only if JSF_NEEDED=false)
+
 - Create `src/main/docker/Dockerfile.jvm` (JVM mode — recommended default):
 
 ```dockerfile
@@ -1655,48 +1681,50 @@ COPY target/quarkus-app/ /app/
 USER appuser
 EXPOSE 8080
 ENTRYPOINT ["java", \
-  "-XX:+UseContainerSupport", \
   "-XX:MaxRAMPercentage=75.0", \
   "-Dquarkus.http.host=0.0.0.0", \
   "-jar", "/app/quarkus-run.jar"]
 ```
 
-- Create `src/main/docker/Dockerfile.native` (optional — if native compilation target):
+- Create `src/main/docker/Dockerfile.native` (multi-stage native build — no local GraalVM needed):
 
 ```dockerfile
-# -- Native Mode Dockerfile --
+FROM quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-21 AS build
+WORKDIR /build
+COPY --chown=quarkus:quarkus . /build
+RUN ./mvnw package -Dnative -DskipTests
+
+FROM quay.io/quarkus/quarkus-micro-image:2.0
+WORKDIR /work/
+COPY --from=build /build/target/*-runner /work/application
+RUN chmod 775 /work/application
+EXPOSE 8080
+CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
+```
+
+- Create `src/main/docker/Dockerfile.native-micro` (pre-built native binary — smallest image):
+
+```dockerfile
 FROM quay.io/quarkus/quarkus-micro-image:2.0
 WORKDIR /work/
 RUN chown 1001 /work \
     && chmod "g+rwX" /work \
     && chown 1001:root /work
 COPY --chown=1001:root target/*-runner /work/application
-
 EXPOSE 8080
 USER 1001
-
-CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
+ENTRYPOINT ["./application", "-Dquarkus.http.host=0.0.0.0"]
 ```
 
-- **Multi-stage native build** (builds native binary inside container — no local GraalVM needed):
-```dockerfile
-FROM quay.io/quarkus/ubi-quarkus-mandrel-builder-image:jdk-17 AS build
-COPY --chown=quarkus:quarkus mvnw /code/mvnw
-COPY --chown=quarkus:quarkus .mvn /code/.mvn
-COPY --chown=quarkus:quarkus pom.xml /code/
-USER quarkus
-WORKDIR /code
-RUN ./mvnw -B org.apache.maven.plugins:maven-dependency-plugin:3.6.1:go-offline
-COPY src /code/src
-RUN ./mvnw package -Dnative -DskipTests
+- **Update docker-compose.yml**: Replace app-server-specific environment variables with Quarkus naming convention. Use `QUARKUS_DATASOURCE_DB_KIND`, `QUARKUS_DATASOURCE_JDBC_URL`, `QUARKUS_DATASOURCE_USERNAME`, `QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_STRATEGY`, etc. Update `dockerfile:` path to `src/main/docker/Dockerfile.jvm`.
 
-FROM quay.io/quarkus/quarkus-micro-image:2.0
-WORKDIR /work/
-COPY --from=build /code/target/*-runner /work/application
-RUN chmod 775 /work/application
-EXPOSE 8080
-CMD ["./application", "-Dquarkus.http.host=0.0.0.0"]
-```
+**Docker container database configuration:**
+- The default Quarkus profile in containers is `prod` — ensure `%prod.quarkus.hibernate-orm.schema-management.strategy` is set appropriately
+- For dev/demo containers with embedded H2, pass environment variables:
+  - QUARKUS_DATASOURCE_JDBC_URL=jdbc:h2:mem:appname;DB_CLOSE_DELAY=-1
+  - QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_STRATEGY=drop-and-create
+  - QUARKUS_HIBERNATE_ORM_SQL_LOAD_SCRIPT=<load-script-filename>
+- Or define a `%container` profile in `application.properties` with in-memory H2 configuration
 
 - If REFLECTION_HEAVY (detected by: heavy use of Jackson polymorphism, JAXB, `Class.forName()`, or frameworks that rely on runtime reflection): add `@RegisterForReflection` to affected classes:
 
@@ -1783,7 +1811,7 @@ public class DatabaseReadinessCheck implements HealthCheck {
 %prod.quarkus.datasource.username=${DB_USER}
 %prod.quarkus.datasource.password=${DB_PASSWORD}
 %prod.quarkus.datasource.jdbc.max-size=20
-%prod.quarkus.hibernate-orm.database.generation=none
+%prod.quarkus.hibernate-orm.schema-management.strategy=none
 %prod.quarkus.hibernate-orm.log.sql=false
 
 # Logging
@@ -1944,6 +1972,11 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 ## Tips
 
 - [2026-03] Quarkus 3.33 is the current LTS (Long Term Support) version. LTS releases are supported for 12 months. Use `quarkus update` CLI command to update existing Quarkus apps between versions.
+- [2026-06] **Dots in @Named bean names break EL resolution on Quarkus/MyFaces.** CDI beans with `@Named("foo.bar")` work on Payara/GlassFish/WildFly but fail on Quarkus because the Expressly EL resolver treats the dot as a property accessor. `#{public.track.trackingId}` is parsed as "bean `public` → property `track` → property `trackingId`" instead of "bean `public.track` → property `trackingId`". Fix: rename to camelCase (`@Named("fooBar")`) and update all EL references in `.xhtml` templates.
+- [2026-06] `quarkus.hibernate-orm.database.generation` is deprecated since Quarkus 3.31. Use `quarkus.hibernate-orm.schema-management.strategy` instead. Values: `drop-and-create`, `update`, `none`, `validate`.
+- [2026-06] **WAR→Quarkus context path removal**: WAR apps deployed to `/app-name` context paths must have all hardcoded context references updated. Quarkus serves at root `/` by default. Replace `/old-context/path` → `/path` in templates and JavaScript. `#{request.contextPath}` resolves to empty string in Quarkus.
+- [2026-06] `-XX:+UseContainerSupport` has been enabled by default since Java 10 (JDK-8146115). Do NOT include it in Dockerfiles for Java 17+ — it's a no-op and adds clutter.
+- [2026-06] **JSF/MyFaces apps cannot use GraalVM native compilation.** JSF relies on runtime reflection, dynamic proxies, and classpath scanning that are fundamentally incompatible with GraalVM's closed-world assumption. Only generate Dockerfile.jvm for apps with JSF_NEEDED=true. Non-JSF apps (pure JAX-RS + CDI) work well in native mode with sub-second startup.
 - [2026-06] Quarkus Dev UI at `/q/dev-ui` provides build-time bean inspection, config editor, and extension management — invaluable during migration debugging.
 - [2026-06] `quarkus.log.category."io.quarkus.arc".level=DEBUG` logs all bean discovery decisions — helps diagnose missing or removed beans.
 - [2026-06] Use `./mvnw quarkus:dev` continuous testing mode for rapid feedback during migration — tests re-run automatically on source changes.
