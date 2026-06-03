@@ -522,6 +522,8 @@ public class CacheWarmer {
 - CDI interceptors: `@Interceptor` + `@InterceptorBinding` work in Quarkus ArC. Add the interceptor binding annotation to the interceptor class (ArC does not read beans.xml `<interceptors>` — use `@Priority` for ordering).
 - CDI `@Alternative` → `@Alternative` + `@Priority` (ArC does not read beans.xml `<alternatives>` section). Or use build-time profile-based selection: `@IfBuildProfile("dev")` / `@UnlessBuildProfile("prod")`.
 - Scan all `package-info.java` for `@Vetoed` — retain it (ArC supports `@Vetoed`).
+- **Remove `Serializable` from CDI beans**: `Serializable` was required for EJB passivation but is unnecessary in Quarkus — ArC proxies do not require it. Scan: `grep -rn 'implements Serializable' src/main/java/` and remove from CDI beans.
+- **Remove subclasses of `jakarta.ws.rs.core.Application`** (the `@ApplicationPath` class): In Quarkus, set the REST base path via `quarkus.rest.path=/path` in application.properties. The Application subclass is a Jakarta EE pattern that is unnecessary in Quarkus.
 - **javax→jakarta completeness**: when migrating a file, ALL `javax.*` EE namespaces in that file must be updated in the same pass. Mixed-namespace files cause compilation failures.
 - Remove all `javax.ejb.*` / `jakarta.ejb.*` imports after migration — no EJB APIs should remain.
 
@@ -575,6 +577,8 @@ quarkus.hibernate-orm."inventory".packages=com.example.inventory.model
 EntityManager inventoryEm;
 ```
 
+- **After migration, re-enable ArC unused bean removal**: ensure `quarkus.arc.remove-unused-beans=false` is NOT present in application.properties (or remove it). Add `@io.quarkus.arc.Unremovable` to beans that are used only via CDI event observers or programmatic lookup (e.g., LoggerProducer, CDI event handler beans). Disabling bean removal is a migration crutch that hurts startup performance.
+
 - **Validation annotation mapping** (same rules as namespace migration but verify completeness):
   - `@NotEmpty` → `@NotBlank` **for String/CharSequence fields ONLY**; for Collection/array/Map fields use `jakarta.validation.constraints.@NotEmpty`.
   - `@Length` (Hibernate Validator) → `@Size` (jakarta.validation).
@@ -584,6 +588,7 @@ EntityManager inventoryEm;
 **Step 8**: Adjust JAX-RS resources (minimal changes — Quarkus is JAX-RS native via RESTEasy Reactive).
 
 - `@Path`, `@GET`, `@POST`, `@PUT`, `@DELETE`, `@PathParam`, `@QueryParam`, `@HeaderParam` — **stay unchanged**. Quarkus RESTEasy Reactive is fully JAX-RS compatible.
+- **Replace JAX-RS `ClientBuilder` with MicroProfile type-safe REST client**: Any class using `ClientBuilder.newClient()` should be migrated to `@RegisterRestClient` interface + `@RestClient` injection. This provides connection pooling, timeout configuration, and fault tolerance integration. Update application.properties with `quarkus.rest-client.<name>.url=...`
 - **Remove the JAX-RS `Application` subclass** (`extends Application` or `extends javax.ws.rs.core.Application`). Quarkus auto-discovers all `@Path`-annotated classes without an Application class.
   - If `@ApplicationPath("/api")` exists → set `quarkus.rest.path=/api` in `application.properties` (already done in Phase 1 Step 5). Delete the class.
   - If `@ApplicationPath("")` or `@ApplicationPath("/")` → no `quarkus.rest.path` needed. Delete the class.
@@ -1493,7 +1498,7 @@ quarkus.hibernate-orm.log.sql=true
 </html>
 ```
 
-- **Rename dotted @Named beans**: Scan for `@Named` annotations containing dots: `grep -rn '@Named(".*\\..*")' src/main/java/`. For each match, rename to camelCase (e.g., `@Named("public.track")` → `@Named("publicTrack")`), then find and replace all EL references in `.xhtml` templates (`#{old.name.property}` → `#{newName.property}`). This is required because Quarkus/MyFaces uses the Expressly EL implementation which strictly interprets dots as property accessors.
+- **Rename dotted @Named beans** (check BOTH public-facing AND admin backing beans): Scan for `@Named` annotations containing dots: `grep -rn '@Named(".*\\..*")' src/main/java/`. For each match, rename to camelCase (e.g., `@Named("public.track")` → `@Named("publicTrack")`), then find and replace all EL references in `.xhtml` templates (`#{old.name.property}` → `#{newName.property}`). This is required because Quarkus/MyFaces uses the Expressly EL implementation which strictly interprets dots as property accessors.
 
 - **`@ManagedBean`/`@Named` backing bean** → `@ApplicationScoped` CDI bean + `Template` injection:
 
@@ -1716,7 +1721,27 @@ USER 1001
 ENTRYPOINT ["./application", "-Dquarkus.http.host=0.0.0.0"]
 ```
 
-- **Update docker-compose.yml**: Replace app-server-specific environment variables with Quarkus naming convention. Use `QUARKUS_DATASOURCE_DB_KIND`, `QUARKUS_DATASOURCE_JDBC_URL`, `QUARKUS_DATASOURCE_USERNAME`, `QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_STRATEGY`, etc. Update `dockerfile:` path to `src/main/docker/Dockerfile.jvm`.
+- **Update docker-compose.yml**: Replace app-server-specific environment variables with Quarkus naming convention. Use `QUARKUS_DATASOURCE_DB_KIND`, `QUARKUS_DATASOURCE_JDBC_URL`, `QUARKUS_DATASOURCE_USERNAME`, `QUARKUS_HIBERNATE_ORM_SCHEMA_MANAGEMENT_STRATEGY`, etc. Update `dockerfile:` path to `src/main/docker/Dockerfile.jvm`. Add a health check to the service:
+
+```yaml
+services:
+  app:
+    build:
+      context: .
+      dockerfile: src/main/docker/Dockerfile.jvm
+    ports:
+      - "8080:8080"
+    environment:
+      - QUARKUS_DATASOURCE_JDBC_URL=jdbc:postgresql://db:5432/mydb
+      - QUARKUS_DATASOURCE_USERNAME=admin
+      - QUARKUS_DATASOURCE_PASSWORD=admin
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/q/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+```
 
 **Docker container database configuration:**
 - The default Quarkus profile in containers is `prod` — ensure `%prod.quarkus.hibernate-orm.schema-management.strategy` is set appropriately
