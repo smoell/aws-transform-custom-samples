@@ -121,6 +121,23 @@ my-app/
 
 Configuration examples: See `references/quarkus-extension-catalog.md`
 
+**MicroProfile API → Quarkus Extension Mapping:**
+
+If the original project uses `org.eclipse.microprofile:*` APIs, add the corresponding Quarkus extensions:
+
+| MicroProfile API | Quarkus Extension | Notes |
+|---|---|---|
+| microprofile-config-api | Included in core (quarkus-arc) | @ConfigProperty works natively |
+| microprofile-fault-tolerance-api | quarkus-smallrye-fault-tolerance | @Retry, @CircuitBreaker, @Bulkhead, @Timeout, @Fallback |
+| microprofile-health-api | quarkus-smallrye-health | @Liveness, @Readiness |
+| microprofile-metrics-api | quarkus-micrometer-registry-prometheus | Different API — see Micrometer |
+| microprofile-rest-client-api | quarkus-rest-client-reactive | @RegisterRestClient |
+| microprofile-jwt-api | quarkus-smallrye-jwt | @Claim, @JsonWebToken |
+| microprofile-openapi-api | quarkus-smallrye-openapi | @OpenAPIDefinition, @Operation |
+| microprofile-opentracing-api | quarkus-opentelemetry | Different API — OpenTelemetry replaces OpenTracing |
+
+Detection: `grep -rn "microprofile" pom.xml build.gradle`
+
 - Remove application server dependencies:
     <!-- xml — see references/ for details -->
 
