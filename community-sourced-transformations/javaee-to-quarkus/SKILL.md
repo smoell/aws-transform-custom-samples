@@ -119,6 +119,8 @@ my-app/
 - Add `quarkus-maven-plugin` with build goal
 - Add core extensions based on Phase 0 flags (quarkus-arc always, plus quarkus-rest, hibernate-orm, etc. as needed)
 
+CRITICAL: Always set `quarkus.platform.version=3.33.x` (current LTS). The ATX agent may default to a different Quarkus version if not explicitly specified. The recommended property in pom.xml: `<quarkus.platform.version>3.33.2</quarkus.platform.version>`. For Gradle: `id 'io.quarkus' version '3.33.2'`.
+
 Configuration examples: See `references/quarkus-extension-catalog.md`
 
 **MicroProfile API → Quarkus Extension Mapping:**
@@ -345,6 +347,8 @@ Detection: `grep -rn '@WebFilter\|@WebListener\|implements Filter\|implements Se
 <!-- Detailed java example: see references/worked-examples-conditional.md -->
 
 - **`@RolesAllowed`** → stays unchanged. Quarkus supports `jakarta.annotation.security.@RolesAllowed` natively on JAX-RS resources and CDI beans. No migration needed.
+
+When adding `@RolesAllowed` to servlets or REST endpoints, a Quarkus security extension MUST be present in pom.xml — otherwise annotations are silently ignored and endpoints remain unprotected. Add: `quarkus-security` + one identity source extension (e.g., `quarkus-elytron-security-properties-file` for basic auth, `quarkus-oidc` for OIDC). Detection: `grep -n '@RolesAllowed\|@PermitAll\|@DenyAll' src/main/java/` — if any found, verify a security extension is in pom.xml.
 - **`@DeclareRoles`** → DELETE. Quarkus does not require role pre-declaration — roles are discovered from the identity provider at runtime.
 - **`@PermitAll` / `@DenyAll`** → stay unchanged (jakarta.annotation.security).
 - **`@RunAs`** → replace with `SecurityIdentity` augmentation. Implement a `SecurityIdentityAugmentor` to transform roles/principals:
@@ -793,6 +797,8 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 
 ## Tips
 
+- [2026-06] **Always explicitly set the Quarkus version to the LTS.** Without explicit `quarkus.platform.version=3.33.2`, the ATX agent may use an older release. Confirm in pom.xml: `<quarkus.platform.version>3.33.2</quarkus.platform.version>` or Gradle: `id 'io.quarkus' version '3.33.2'`.
+- [2026-06] **`@RolesAllowed` without a security extension is silently ignored.** Adding `@RolesAllowed` to a method or class does nothing unless a Quarkus security extension (`quarkus-security` + an identity provider) is also in the dependencies. Always verify: `grep -rn 'quarkus-security\|quarkus-oidc\|quarkus-elytron' pom.xml build.gradle`.
 - [2026-03] Quarkus 3.33 is the current LTS (Long Term Support) version. LTS releases are supported for 12 months. Use `quarkus update` CLI command to update existing Quarkus apps between versions.
 - [2026-06] **WildFly/JBoss system properties** (`jboss.node.name`, `jboss.server.config.dir`, etc.) do not exist in Quarkus. Replace with `@ConfigProperty` using Quarkus-native keys or custom properties.
 - [2026-06] **Dots in @Named bean names break EL resolution on Quarkus/MyFaces.** CDI beans with `@Named("foo.bar")` work on Payara/GlassFish/WildFly but fail on Quarkus because the Expressly EL resolver treats the dot as a property accessor. `#{public.track.trackingId}` is parsed as "bean `public` → property `track` → property `trackingId`" instead of "bean `public.track` → property `trackingId`". Fix: rename to camelCase (`@Named("fooBar")`) and update all EL references in `.xhtml` templates.
