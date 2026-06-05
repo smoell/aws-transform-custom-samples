@@ -39,6 +39,10 @@ Items requiring separate handling:
 - **XA Distributed Transactions**: Complex transaction coordination
 - **Vaadin UI**: Rich web framework migration
 
+## Pre-Migration Blockers
+
+**REMOTE_EJB_DETECTED** — @Remote interfaces detected. Quarkus has no EJB remote invocation support. Document which beans are remote, remove @Remote annotations from interfaces, and plan REST/gRPC replacements before proceeding.
+
 ## Constraints and Guardrails
 
 - **API & Functional Parity**: Preserve all public class names, method signatures, REST endpoint paths, HTTP methods, request/response formats, and status codes. Business logic unchanged — only framework/infrastructure code modified.
@@ -64,11 +68,14 @@ See `references/worked-examples-conditional.md` for detailed before/after code e
 
 | Flag | Triggers | Phase Activated |
 |------|----------|-----------------|
+| `REMOTE_EJB_DETECTED` | `grep -rn '@Remote\|@RemoteHome\|jboss-ejb-client\|ejb:/' src/ pom.xml | head -1` | **PRE-MIGRATION BLOCKER** — Remote EJB/IIOP is a Non-Goal. Halt with message: "Remote EJB interfaces detected. This is a Non-Goal per steering context — redesign remote calls to REST/gRPC before proceeding." |
 | `EJB_NEEDED` | `@Stateless/@Stateful/@Singleton`, `ejb-jar.xml` | Phase 2 (EJB→CDI) |
 | `JMS_NEEDED` | `@MessageDriven`, `javax.jms.*` imports | Phase 3 (Messaging) |
 | `SECURITY_NEEDED` | `@RolesAllowed`, `<security-constraint>` in web.xml | Phase 3 (Security) |
 | `JSF_NEEDED` | `.xhtml` files, `javax.faces.*` imports | Phase 4 (UI) |
 | `HAS_JSP` | `find src/ -name '*.jsp' | head -1` returns a result | Phase 4 — JSP files must be migrated to Facelets or removed; Quarkus undertow has no JSP compiler |
+| `BATCH_NEEDED` | `find src/ -name '*.xml' -path '*META-INF/batch-jobs*' | head -1 || grep -rn 'jakarta.batch\|javax.batch' src/main/java/ | head -1` | Phase 3 (Batch) |
+| `MAIL_NEEDED` | `grep -rn 'jakarta.mail\|javax.mail\|@Resource.*mail\|Session.getInstance' src/main/java/` | Phase 3 (Mail) |
 | `SOAP_NEEDED` | `@WebService`, WSDL files | Phase 3 (SOAP) |
 | `IS_MULTI_MODULE` | Multiple `src/main/java` trees (EAR/EJB/WAR) | Phase 1 consolidation |
 
@@ -303,7 +310,18 @@ Examples: See `references/ejb-to-cdi-mapping.md`
   - `@OnMessage` → `@OnTextMessage` / `@OnBinaryMessage`
   - Session management via `WebSocketConnection` injection instead of `javax.websocket.Session`
 
-**Step 11** (if HAS_JNDI): Replace JNDI lookups.
+**Step: Migrate @WebFilter and @WebListener — conditional on HAS_SERVLET_FILTERS or HAS_SERVLET_LISTENERS**
+Detection: `grep -rn '@WebFilter\|@WebListener\|implements Filter\|implements ServletContextListener' src/main/java/`
+
+@WebFilter migration (choose one):
+- Option A (keep as-is with quarkus-undertow): quarkus-undertow already added — @WebFilter works unchanged
+- Option B (JAX-RS migration): `@Provider @PreMatching public class X implements ContainerRequestFilter`
+
+@WebListener → CDI events:
+- `contextInitialized()` → `void onStart(@Observes StartupEvent ev) {...}`
+- `contextDestroyed()` → `void onStop(@Observes ShutdownEvent ev) {...}`
+
+**Step 12** (if HAS_JNDI): Replace JNDI lookups.
 
 - `InitialContext.lookup("java:comp/env/...")` → `@Inject` + `@ConfigProperty`:
 
@@ -344,7 +362,7 @@ quarkus.http.auth.form.landing-page=/index.html
 quarkus.http.auth.basic=true
 ```
 
-**Step 13** (if JMS_NEEDED or MDB_NEEDED): Migrate messaging. See `references/jms-to-smallrye.md` for detailed patterns.
+**Step 14** (if JMS_NEEDED or MDB_NEEDED): Migrate messaging. See `references/jms-to-smallrye.md` for detailed patterns.
 
 **Option A — Keep JMS API** (minimal change, same programming model):
 
@@ -395,7 +413,7 @@ Examples: See `references/jms-to-smallrye.md`
 - **Message selectors**: not directly supported in SmallRye — implement filtering logic in the consumer method or use separate channels per message type.
 - **Dead-letter queue**: configure via broker-specific properties (`dead-letter-queue`, `failure-strategy=dead-letter-queue`).
 
-**Step 14** (if SOAP_NEEDED): Migrate SOAP web services.
+**Step 15** (if SOAP_NEEDED): Migrate SOAP web services.
 
 **Option A — Keep SOAP** (minimal change with Apache CXF):
 
@@ -437,7 +455,7 @@ quarkus.cxf.client."partner".client-endpoint-url=http://partner.example.com/serv
 
 Exit: `./mvnw clean test` passes. All migrated tests execute and pass.
 
-**Step 15**: Migrate test framework. See `references/arquillian-to-quarkustest.md` for complete mapping.
+**Step 16**: Migrate test framework. See `references/arquillian-to-quarkustest.md` for complete mapping.
 
 - **Remove Arquillian dependencies** from pom.xml:
     <!-- xml — see references/ for details -->
@@ -499,7 +517,7 @@ quarkus.hibernate-orm.log.sql=true
 - Add a global `ExceptionMapper` for `ConstraintViolationException`. Instead of inline error handling in REST controllers, add a class implementing `ExceptionMapper<ConstraintViolationException>` annotated with `@Provider` to return consistent validation error responses:
 <!-- Detailed java example: see references/worked-examples-conditional.md -->
 
-**Step 16** (if JSF_NEEDED): Migrate UI. 
+**Step 17** (if JSF_NEEDED): Migrate UI.
 
 Check for `.jsp` files in `src/main/webapp/` or `src/main/resources/META-INF/resources/`. Quarkus undertow does NOT support JSP compilation (no Jasper) — `.jsp` files will be served as raw source text. Detection: `find src/ -name '*.jsp'`. Options:
 1. **Migrate to Facelets** (preferred): Convert `.jsp` to `.xhtml` Facelets templates. Replace JSP scriptlets (`<% %>`, `<%= %>`) with JSF EL expressions.
@@ -552,7 +570,17 @@ Key actions:
 - **Limitations**: no native compilation support, larger memory footprint, slower startup. Acceptable for migration step but not final state for cloud-native deployment.
 - Move `.xhtml` files from `src/main/webapp/` → `src/main/resources/META-INF/resources/` (Quarkus serves static/template content from resources).
 
-**Step 17** (if BATCH_NEEDED): Migrate batch processing.
+**Step 18** (if BATCH_NEEDED): Migrate batch processing.
+
+**Step: Migrate Jakarta Batch (JSR 352) — conditional on `BATCH_NEEDED`.**
+Detect: `grep -rn 'jakarta.batch\|javax.batch\|@BatchProperty\|JobOperator' src/main/java/` or `find src/ -name '*.xml' -path '*META-INF/batch-jobs*'`.
+Add extension: `io.quarkiverse.jberet:quarkus-jberet:2.x` (latest compatible with Quarkus 3.33).
+Changes required:
+- `META-INF/batch-jobs/*.xml` stays in place (no changes needed)
+- `@BatchProperty`, `ItemReader`, `ItemProcessor`, `ItemWriter` annotations stay unchanged
+- Replace `BatchRuntime.getJobOperator()` JNDI lookup with `@Inject JobOperator jobOperator`
+- `JobOperator.start(jobName, props)` API remains the same
+Exit gate: `./mvnw clean compile` passes, `BatchRuntime` import replaced.
 
 - **Simple scheduled jobs** (EJB `@Schedule`): already handled in Phase 2 Step 9 via `@Scheduled`. Verify migration is complete.
 - **JSR 352 Batch** (complex multi-step jobs with `ItemReader`/`ItemProcessor`/`ItemWriter`):
@@ -576,6 +604,15 @@ Key actions:
 
 - **Checkpoint/restart semantics**: if the original batch job relies on JSR 352 checkpointing, preserve with JBeret (Option A). Pure Quarkus-native redesign loses automatic checkpoint/restart — implement manually if needed.
 
+**Step: Migrate JavaMail — conditional on `MAIL_NEEDED`**
+Detection: `grep -rn 'jakarta.mail\|javax.mail\|@Resource.*mail\|Session.getInstance' src/main/java/`
+Add extension: `io.quarkus:quarkus-mailer`
+Migration:
+- Remove `@Resource(lookup="java:jboss/mail/Default") Session session` → `@Inject Mailer mailer`
+- Replace `new MimeMessage(session)` / `Transport.send(msg)` with `mailer.send(Mail.withText(to, subject, body))`
+- Map JNDI mail properties → application.properties: `quarkus.mailer.host`, `quarkus.mailer.port`, `quarkus.mailer.from`
+- For HTML email: `Mail.withHtml(to, subject, htmlBody)`
+
 **Exit gate**: Run `./mvnw clean test` — all tests must pass. Additional verification:
 - No `@RunWith(Arquillian.class)` remaining: `grep -rn "Arquillian" src/test/` — must return empty
 - No ShrinkWrap imports remaining: `grep -rn "shrinkwrap\|ShrinkWrap" src/test/` — must return empty
@@ -586,7 +623,7 @@ Key actions:
 
 Exit: `./mvnw clean verify` passes AND Docker image builds AND `/q/health` returns UP.
 
-**Step 18**: Generate containerization artifacts.
+**Step 19**: Generate containerization artifacts.
 
 - **Remove old app server Dockerfiles**: Delete root `Dockerfile` (Payara/WildFly/Liberty), `post-boot-commands.asadmin`, `server.xml`, `glassfish-resources.xml`, and other app-server-specific deployment artifacts. Verify: `find . -maxdepth 1 -name "Dockerfile" -o -name "*.asadmin" -o -name "server.xml"` — must return empty.
 - When the repo has a legacy `Containerfile` (or `Dockerfile`) targeting the old app server (WildFly, JBoss), rename it to `Containerfile.legacy` or remove it. Leaving the old Containerfile creates confusion — CI/CD pipelines may pick it up instead of the new `src/main/docker/Dockerfile.jvm`.
@@ -639,7 +676,7 @@ Exit: `./mvnw clean verify` passes AND Docker image builds AND `/q/health` retur
 
 **Native image compatibility**: Add @RegisterForReflection for classes needing reflection (JSON serialization targets, etc.)
 
-**Step 19**: Configure health and observability.
+**Step 20**: Configure health and observability.
 
 Add health and metrics extensions: `quarkus-smallrye-health`, `quarkus-micrometer-registry-prometheus`
 
@@ -666,7 +703,7 @@ Configuration examples: See `references/quarkus-extension-catalog.md`
 ```
 Kubernetes manifest generation example: See `references/quarkus-extension-catalog.md`
 
-**Step 20**: Final verification scan.
+**Step 21**: Final verification scan.
 
 See `references/phase0-detection-flags.md` for complete validation commands including:
 - Build verification (`./mvnw clean verify` passes)
