@@ -73,6 +73,7 @@ See `references/worked-examples-conditional.md` for detailed before/after code e
 | `JMS_NEEDED` | `@MessageDriven`, `javax.jms.*` imports | Phase 3 (Messaging) |
 | `SECURITY_NEEDED` | `@RolesAllowed`, `<security-constraint>` in web.xml | Phase 3 (Security) |
 | `JSF_NEEDED` | `.xhtml` files, `javax.faces.*` imports | Phase 4 (UI) |
+| `HAS_JSF_NAMESPACE_TYPO` | `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` | Fix IMMEDIATELY — rename to jakarta.faces.* |
 | `HAS_JSP` | `find src/ -name '*.jsp' | head -1` returns a result | Phase 4 — JSP files must be migrated to Facelets or removed; Quarkus undertow has no JSP compiler |
 | `BATCH_NEEDED` | `find src/ -name '*.xml' -path '*META-INF/batch-jobs*' | head -1 || grep -rn 'jakarta.batch\|javax.batch' src/main/java/ | head -1` | Phase 3 (Batch) |
 | `MAIL_NEEDED` | `grep -rn 'jakarta.mail\|javax.mail\|@Resource.*mail\|Session.getInstance' src/main/java/` | Phase 3 (Mail) |
@@ -476,6 +477,14 @@ quarkus.cxf.client."partner".client-endpoint-url=http://partner.example.com/serv
 
 Exit: `./mvnw clean test` passes. All migrated tests execute and pass.
 
+**MANDATORY FIRST STEP in Phase 4 — JSF Namespace Verification:**
+Run this command and fix ALL results before proceeding with any other Phase 4 work:
+`grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."`
+
+For every match: change `jakarta.face.html` → `jakarta.faces.html`, `jakarta.face.core` → `jakarta.faces.core`, etc.
+This error causes h: tags to fail silently — pages render but no JSF components work.
+This check MUST pass (return zero results) before the phase exit gate.
+
 **Step 16**: Migrate test framework. See `references/arquillian-to-quarkustest.md` for complete mapping.
 
 - **Remove Arquillian dependencies** from pom.xml:
@@ -784,6 +793,7 @@ Load reference files on demand when the worker encounters these signals:
 11. No servlet with dangerous operations (`Runtime.halt`, `System.exit`, `exec()`) without `@RolesAllowed` protection
 12. No old app-server Containerfile/Dockerfile at project root — only `src/main/docker/Dockerfile.jvm` should exist
 13. No old integration test modules targeting WildFly/TomEE/Liberty in the active build
+14. JSF namespace typo check passes: `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` returns zero results
 
 Additional validations: See `references/phase0-detection-flags.md`
 
