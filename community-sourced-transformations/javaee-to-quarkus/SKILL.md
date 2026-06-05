@@ -146,6 +146,9 @@ Exit: `./mvnw clean compile -Dmaven.test.skip=true` passes.
 
 **Step 1** (if IS_MULTI_MODULE): Consolidate multi-module (EJB+WAR+EAR) into single Quarkus module. Merge all `src/main/java` trees into one module. Move resources from EJB/WAR submodules into the consolidated `src/main/resources`. After consolidation: (a) verify only ONE `src/main/java` tree exists — dual source trees cause edits to the wrong tree to have zero effect; (b) remove stale legacy module directories (ear/, ejb/, war/ submodules); (c) collapse the parent POM `<modules>` section — the final POM must NOT declare submodules; (d) delete any `build-helper-maven-plugin` executions that referenced old module paths.
 
+- **Old module directories remain on disk** after consolidation (e.g., daytrader-ee7-ejb/, daytrader-ee7-web/, daytrader-ee7/) — they are NOT deleted and serve as reference material. Ensure `settings.gradle` (Gradle) or root `pom.xml` does NOT include them as submodules, so they are excluded from the build.
+- **For Gradle projects**: if no gradlew wrapper exists, download `gradle-wrapper.jar` from CDN and create a minimal `gradlew` shell script. Set the distribution URL in `gradle/wrapper/gradle-wrapper.properties` to Gradle 8.x.
+
 Example — before consolidation:
 ```
 my-app/
@@ -237,6 +240,12 @@ my-app/
     <groupId>io.quarkus</groupId>
     <artifactId>quarkus-hibernate-validator</artifactId>
 </dependency>
+
+<!-- if JSF_NEEDED (MyFaces support) -->
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-undertow</artifactId>
+</dependency>
 ```
 
 - Remove application server dependencies:
@@ -326,7 +335,18 @@ quarkus.hibernate-orm.log.sql=false
 # HTTP server (from web.xml / jboss-web.xml)
 quarkus.http.port=8080
 quarkus.http.root-path=/api
+
+# JMS connection config (custom properties for Artemis)
+artemis.url=tcp://localhost:61616
+artemis.username=admin
+artemis.password=admin
 ```
+
+- **Remove deprecated config keys**: `quarkus.hibernate-orm.database.generation` may appear alongside the new key in migration outputs — remove it entirely, keep only `quarkus.hibernate-orm.schema-management.strategy`.
+
+- **MyFaces configuration**: `org.apache.myfaces.PROJECT_STAGE` is NOT set via `quarkus.myfaces.*` application.properties keys. Set it as a `<context-param>` in `web.xml` (e.g., `jakarta.faces.PROJECT_STAGE=Production`) or leave as default. Remove any `quarkus.myfaces.*` keys from application.properties — they will generate "Unrecognized configuration key" warnings.
+
+- **JMS connection config**: Use custom property names like `artemis.url`, `artemis.username`, `artemis.password` (not `quarkus.artemis.*` which is reserved for the quarkiverse Artemis extension). Reference these in JmsProducer beans via `@ConfigProperty`.
 
 - **Before deleting persistence.xml**: extract all configuration values:
   - Datasource JNDI names → `quarkus.datasource.*` properties
@@ -463,6 +483,11 @@ public class OrderService {
 | `SUPPORTS` | `@Transactional(TxType.SUPPORTS)` |
 | `MANDATORY` | `@Transactional(TxType.MANDATORY)` |
 | `NEVER` | `@Transactional(TxType.NEVER)` |
+
+- Apply `@Transactional` at **method level**, not class level. Remove any class-level `@Transactional` from the migrated service bean. Add it explicitly only to write methods (buy, sell, completeOrder, login, logout, register, createQuote, updateQuotePriceVolume, getClosedOrders). Use `@Transactional(TxType.SUPPORTS)` or no annotation for read-only methods (getQuote, getAllQuotes, getHoldings, getAccountData, getAccountProfileData, getMarketSummary). Keep special overrides: `@Transactional(TxType.NOT_SUPPORTED)` for resetTrade, `@Transactional(TxType.REQUIRES_NEW)` for publishQuotePriceChange.
+- Convert non-CDI service façade classes to `@ApplicationScoped` CDI beans. Any class that was a client-side EJB façade instantiated via `new` must itself become CDI-managed. Add `@ApplicationScoped` and inject dependencies via `@Inject`. Using `Arc.container().instance(...).get()` as a JNDI replacement is an anti-pattern that bypasses CDI lifecycle. Detection: `grep -rn "Arc\.container\(\)" src/main/java/`
+- Remove static resource caches from migrated CDI beans. Static `DataSource`, `ConnectionFactory`, `Queue`, `Topic` fields initialized in `static init()` methods must be replaced with `@Inject` fields. Static state breaks Quarkus dev mode hot reload. Detection: `grep -rn "private static.*DataSource\|private static.*initialized\b" src/main/java/`
+- For async work in CDI beans, replace `Executors.newCachedThreadPool()` with `@Inject org.eclipse.microprofile.context.ManagedExecutor`. Unmanaged thread pools have no graceful shutdown integration with Quarkus.
 
 - **@Asynchronous EJB methods**: Quarkus does not have a direct `@Asynchronous` equivalent. Options:
   - Return `Uni<T>` (Mutiny) or `CompletionStage<T>` — Quarkus reactive model handles non-blocking execution natively.
@@ -2005,3 +2030,10 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 - [2026-06] Quarkus Dev UI at `/q/dev-ui` provides build-time bean inspection, config editor, and extension management — invaluable during migration debugging.
 - [2026-06] `quarkus.log.category."io.quarkus.arc".level=DEBUG` logs all bean discovery decisions — helps diagnose missing or removed beans.
 - [2026-06] Use `./mvnw quarkus:dev` continuous testing mode for rapid feedback during migration — tests re-run automatically on source changes.
+- [2026-06] **Class-level `@Transactional` applies to ALL methods** including read-only getters — unnecessary overhead. Always use method-level `@Transactional`. Use `@Transactional(TxType.SUPPORTS)` or no annotation for read-only methods.
+- [2026-06] **JSF `@Named` beans without an explicit CDI scope default to `@Dependent`** (new instance per injection point). This breaks JSF views. Always add `@RequestScoped` (or `@ViewScoped`/`@SessionScoped`) to all JSF backing beans. Detection: `grep -rn "@Named" src/main/java/ | grep -v "//"`
+- [2026-06] **`faces-config.xml` must use Jakarta EE 4.0 namespace for Quarkus 3.x / MyFaces 4.x.** Change `xmlns="http://xmlns.jcp.org/xml/ns/javaee"` → `xmlns="https://jakarta.ee/xml/ns/jakartaee"`, version `2.2` → `4.0`.
+- [2026-06] **Non-CDI service classes instantiated via `new` that delegate to CDI beans must become `@ApplicationScoped`.** Using `Arc.container().instance(...).get()` as a JNDI replacement is an anti-pattern — bypasses CDI lifecycle and interceptors. Detection: `grep -rn "Arc\.container\(\)\|new.*Action\(\)" src/main/java/`
+- [2026-06] **Remove static resource caches from migrated CDI beans.** Static `DataSource`/`ConnectionFactory` fields initialized in `static init()` via `Arc.container()` break Quarkus dev mode. Replace with `@Inject` fields. Detection: `grep -rn "private static.*DataSource\|private static.*initialized\b" src/main/java/`
+- [2026-06] **Prefer `@Inject ManagedExecutor` over `Executors.newCachedThreadPool()` in CDI beans.** Unmanaged pools have no graceful shutdown integration. Use `org.eclipse.microprofile.context.ManagedExecutor` from `quarkus-smallrye-context-propagation`.
+- [2026-06] **Use UBI9 as the Docker base image.** Replace outdated base images with `registry.access.redhat.com/ubi9/openjdk-17` for security updates and Red Hat support. UBI (Universal Base Image) is optimized for containers and includes security scanning.
