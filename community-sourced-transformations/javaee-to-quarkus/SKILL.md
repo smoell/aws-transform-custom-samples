@@ -323,9 +323,13 @@ Security examples: See `references/security-to-quarkus-security.md`
 
 <!-- Detailed java example: see references/worked-examples-conditional.md -->
 
+- Replace `System.getProperty("jboss.node.name")` and similar JBoss/WildFly system properties with `@ConfigProperty`. These are runtime-only properties in WildFly that have no equivalent in Quarkus. Map to Quarkus-native keys: `quarkus.application.name` for node naming, or custom `@ConfigProperty(name = "clusterbench.node-name", defaultValue = "quarkus-node")`.
+
 - **`EJBContext.isCallerInRole()` / `SessionContext.getCallerPrincipal()`** → inject `SecurityContext`:
 
 <!-- Detailed java example: see references/worked-examples-conditional.md -->
+
+- Review all servlets for dangerous operations (system restarts, JVM halt, process execution). Any servlet calling `Runtime.getRuntime().halt()`, `System.exit()`, or similar must have `@RolesAllowed("admin")` or be removed. Without security, these endpoints are accessible to anyone in Quarkus (no server-level admin security).
 
 - **Form-based auth** (if `<login-config><auth-method>FORM</auth-method>` in web.xml):
 ```properties
@@ -585,6 +589,8 @@ Exit: `./mvnw clean verify` passes AND Docker image builds AND `/q/health` retur
 **Step 18**: Generate containerization artifacts.
 
 - **Remove old app server Dockerfiles**: Delete root `Dockerfile` (Payara/WildFly/Liberty), `post-boot-commands.asadmin`, `server.xml`, `glassfish-resources.xml`, and other app-server-specific deployment artifacts. Verify: `find . -maxdepth 1 -name "Dockerfile" -o -name "*.asadmin" -o -name "server.xml"` — must return empty.
+- When the repo has a legacy `Containerfile` (or `Dockerfile`) targeting the old app server (WildFly, JBoss), rename it to `Containerfile.legacy` or remove it. Leaving the old Containerfile creates confusion — CI/CD pipelines may pick it up instead of the new `src/main/docker/Dockerfile.jvm`.
+- Integration test modules targeting the old app server (e.g., `integration-tests/wildfly/`, `integration-tests/tomcat/`) should be removed or moved to a `legacy/` directory.
 
 **Native image compatibility check (if JSF_NEEDED=true):**
 - DO NOT generate Dockerfile.native or Dockerfile.native-micro when JSF_NEEDED=true
@@ -715,6 +721,9 @@ Load reference files on demand when the worker encounters these signals:
 8. Application starts in <10 seconds: `Quarkus started in X.XXXs` log line  
 9. Health check returns UP: `curl http://localhost:8080/q/health`
 10. All original test assertions pass — no @Disabled tests as migration shortcuts
+11. No servlet with dangerous operations (`Runtime.halt`, `System.exit`, `exec()`) without `@RolesAllowed` protection
+12. No old app-server Containerfile/Dockerfile at project root — only `src/main/docker/Dockerfile.jvm` should exist
+13. No old integration test modules targeting WildFly/TomEE/Liberty in the active build
 
 Additional validations: See `references/phase0-detection-flags.md`
 
@@ -731,6 +740,7 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 ## Tips
 
 - [2026-03] Quarkus 3.33 is the current LTS (Long Term Support) version. LTS releases are supported for 12 months. Use `quarkus update` CLI command to update existing Quarkus apps between versions.
+- [2026-06] **WildFly/JBoss system properties** (`jboss.node.name`, `jboss.server.config.dir`, etc.) do not exist in Quarkus. Replace with `@ConfigProperty` using Quarkus-native keys or custom properties.
 - [2026-06] **Dots in @Named bean names break EL resolution on Quarkus/MyFaces.** CDI beans with `@Named("foo.bar")` work on Payara/GlassFish/WildFly but fail on Quarkus because the Expressly EL resolver treats the dot as a property accessor. `#{public.track.trackingId}` is parsed as "bean `public` → property `track` → property `trackingId`" instead of "bean `public.track` → property `trackingId`". Fix: rename to camelCase (`@Named("fooBar")`) and update all EL references in `.xhtml` templates.
 - [2026-06] `quarkus.hibernate-orm.database.generation` is deprecated since Quarkus 3.31. Use `quarkus.hibernate-orm.schema-management.strategy` instead. Values: `drop-and-create`, `update`, `none`, `validate`.
 - [2026-06] **WAR→Quarkus context path removal**: WAR apps deployed to `/app-name` context paths must have all hardcoded context references updated. Quarkus serves at root `/` by default. Replace `/old-context/path` → `/path` in templates and JavaScript. `#{request.contextPath}` resolves to empty string in Quarkus.
