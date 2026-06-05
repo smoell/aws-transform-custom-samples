@@ -595,7 +595,8 @@ Key actions:
 
 **Step: Migrate Jakarta Batch (JSR 352) — conditional on `BATCH_NEEDED`.**
 Detect: `grep -rn 'jakarta.batch\|javax.batch\|@BatchProperty\|JobOperator' src/main/java/` or `find src/ -name '*.xml' -path '*META-INF/batch-jobs*'`.
-Add extension: `io.quarkiverse.jberet:quarkus-jberet:2.x` (latest compatible with Quarkus 3.33).
+
+Note on extension compatibility: `quarkus-jberet:2.10.0` (latest, Red Hat/IBM, stable) requires Quarkus 3.36+. For Quarkus 3.33 LTS: no compatible version available — replace batch job classes with CDI-based alternatives (see CDI event processing or quarkus-scheduler). Check https://quarkus.io/extensions/io.quarkiverse.jberet/quarkus-jberet/ for the latest compatible version.
 Changes required:
 - `META-INF/batch-jobs/*.xml` stays in place (no changes needed)
 - `@BatchProperty`, `ItemReader`, `ItemProcessor`, `ItemWriter` annotations stay unchanged
@@ -606,11 +607,12 @@ Exit gate: `./mvnw clean compile` passes, `BatchRuntime` import replaced.
 - **Simple scheduled jobs** (EJB `@Schedule`): already handled in Phase 2 Step 9 via `@Scheduled`. Verify migration is complete.
 - **JSR 352 Batch** (complex multi-step jobs with `ItemReader`/`ItemProcessor`/`ItemWriter`):
 
-**Option A — JBeret extension** (preserves JSR 352 API):
+**Option A — JBeret extension** (preserves JSR 352 API - requires Quarkus 3.36+):
 ```xml
 <dependency>
     <groupId>io.quarkiverse.jberet</groupId>
     <artifactId>quarkus-jberet</artifactId>
+    <version>2.10.0</version>
 </dependency>
 ```
   - Batch job XML files (`META-INF/batch-jobs/*.xml`) work unchanged.
