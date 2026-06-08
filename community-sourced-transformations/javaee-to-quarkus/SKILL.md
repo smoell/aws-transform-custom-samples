@@ -74,6 +74,7 @@ See `references/worked-examples-conditional.md` for detailed before/after code e
 | `SECURITY_NEEDED` | `@RolesAllowed`, `<security-constraint>` in web.xml | Phase 3 (Security) |
 | `JSF_NEEDED` | `.xhtml` files, `javax.faces.*` imports | Phase 4 (UI) |
 | `HAS_JSF_NAMESPACE_TYPO` | `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` | Fix IMMEDIATELY — rename to jakarta.faces.* |
+| `HAS_DOTTED_NAMED_BEANS` | `grep -rn '@Named(".*\\..*")' src/main/java/` | Phase 2 (CDI migration) |
 | `HAS_JSP` | `find src/ -name '*.jsp' | head -1` returns a result | Phase 4 — JSP files must be migrated to Facelets or removed; Quarkus undertow has no JSP compiler |
 | `BATCH_NEEDED` | `find src/ -name '*.xml' -path '*META-INF/batch-jobs*' | head -1 || grep -rn 'jakarta.batch\|javax.batch' src/main/java/ | head -1` | Phase 3 (Batch) |
 | `MAIL_NEEDED` | `grep -rn 'jakarta.mail\|javax.mail\|@Resource.*mail\|Session.getInstance' src/main/java/` | Phase 3 (Mail) |
@@ -241,6 +242,8 @@ Exit: `./mvnw clean compile` passes.
 
 **Migration Comment Rule**: MIGRATION comments must use plain English, not annotation names (e.g., "Converted stateless session bean" not "Removed @Stateless").
 
+**Step: Rename dotted @Named bean names BEFORE any other CDI migration.** EL resolvers interpret dots as property accessors — `#{public.track}` is parsed as bean `public` → property `track`, not as a single bean named `public.track`. This bug exists in the ORIGINAL SOURCE and must be fixed first. Detection: `grep -rn '@Named(".*\\..*")' src/main/java/`. For each match: rename to camelCase (`@Named("foo.bar")` → `@Named("fooBar")`), then update ALL EL references: `grep -rn 'foo\.bar' src/main/resources/`.
+
 **Step 6**: Migrate EJBs to CDI beans.
 
 - @Stateless → @ApplicationScoped + @Transactional (only for persistence operations)
@@ -254,6 +257,7 @@ Exit: `./mvnw clean compile` passes.
 **@TransactionAttribute mapping**: See reference table in `references/ejb-to-cdi-mapping.md`
 - Apply @Transactional at method level, not class level
 - Use appropriate TxType (REQUIRED, REQUIRES_NEW, etc.)
+- Remove class-level `@Transactional` from service beans. Add `@Transactional` only to methods that write to the database. Methods that call external REST services (like `requestPossibleRoutesForCargo()`) must NOT have `@Transactional` — holding a DB connection during network I/O wastes pool resources. Detection: `grep -rn '@Transactional' src/main/java/ | grep -v '//'` — for each class-level annotation, split to method-level.
 - *(see references/ for remaining transaction patterns)*
 
 **Step 7**: Migrate JPA configuration.
@@ -292,6 +296,7 @@ EntityManager inventoryEm;
   - If `@ApplicationPath("")` or `@ApplicationPath("/")` → no `quarkus.rest.path` needed. Delete the class.
 - `Response` / `Response.ok()` / `Response.status()` patterns remain valid — no changes needed.
 - JAX-RS `@Provider`-annotated classes (`ExceptionMapper`, `MessageBodyReader/Writer`, `ContainerRequestFilter`, `ContainerResponseFilter`) — **work unchanged** in Quarkus. ArC discovers `@Provider` beans automatically.
+- **For SSE services (@ServerSentEvents / SseEventSink)**: Do NOT inject `@Context Sse sse` as a field in `@ApplicationScoped` beans — it is null at @PostConstruct. Instead: (a) inject `Sse sse` as a method parameter in the @GET endpoint, (b) initialize `SseBroadcaster` lazily on first use: `if (broadcaster == null) { synchronized(this) { if (broadcaster == null) broadcaster = sse.newBroadcaster(); } }`. Or migrate to Quarkus reactive `@RestStreamElementType + Multi<T>` pattern.
 - **Quarkus-specific enhancements** (OPTIONAL — do NOT force): if migrating to RESTEasy Reactive idioms:
   - Return types can be `Uni<T>` for non-blocking (requires `quarkus-rest` extension, already added in Step 2).
   - `@Blocking` annotation on resource methods that perform blocking I/O (JDBC, file I/O) when using the reactive REST extension.
@@ -487,6 +492,8 @@ This check MUST pass (return zero results) before the phase exit gate.
 
 **Step 16**: Migrate test framework. See `references/arquillian-to-quarkustest.md` for complete mapping.
 
+- **Delete all commented-out test classes with no active @Test methods.** Detection: `for f in $(find src/test -name '*Test*.java'); do if ! grep -q '@Test' $f; then echo $f; fi; done`. These produce false coverage confidence.
+
 - **Remove Arquillian dependencies** from pom.xml:
     <!-- xml — see references/ for details -->
 
@@ -566,11 +573,11 @@ Key actions:
 - Convert .xhtml templates to .html in src/main/resources/templates/
 - Replace JSF backing beans with JAX-RS resources
 - Fix hardcoded context paths (WAR → root serving)
-- Rename dotted @Named beans to camelCase for EL compatibility
+- Verify dotted @Named beans were fixed in Phase 2
 
 <!-- Detailed html example: see references/worked-examples-conditional.md -->
 
-- **Rename dotted @Named beans** (check BOTH public-facing AND admin backing beans): Scan for `@Named` annotations containing dots: `grep -rn '@Named(".*\\..*")' src/main/java/`. For each match, rename to camelCase (e.g., `@Named("public.track")` → `@Named("publicTrack")`), then find and replace all EL references in `.xhtml` templates (`#{old.name.property}` → `#{newName.property}`). This is required because Quarkus/MyFaces uses the Expressly EL implementation which strictly interprets dots as property accessors.
+- **Verify dotted @Named beans were fixed** (VERIFICATION ONLY — Phase 2 should have already fixed this): Run `grep -rn '@Named(".*\\..*")' src/main/java/` — this MUST return zero results. If any matches found, Phase 2 Step 7a was skipped or incomplete. EL resolvers in Quarkus/MyFaces interpret dots as property accessors, causing `#{public.track}` to be parsed as bean `public` → property `track` instead of bean `public.track`.
 
 - **`@ManagedBean`/`@Named` backing bean** → `@ApplicationScoped` CDI bean + `Template` injection:
 
@@ -708,6 +715,8 @@ Exit: `./mvnw clean verify` passes AND Docker image builds AND `/q/health` retur
 
 **Native image compatibility**: Add @RegisterForReflection for classes needing reflection (JSON serialization targets, etc.)
 
+- **Verify Dockerfile.jvm matches the configured `quarkus.package.jar.type`.** If `uber-jar`: COPY target/app-runner.jar, set ENTRYPOINT to run the JAR. If `fast-jar` (default): use the quarkus-app/ directory layout. If `legacy-jar`: COPY target/app.jar. Mismatch causes 'file not found' at container startup.
+
 **Step 20**: Configure health and observability.
 
 Add health and metrics extensions: `quarkus-smallrye-health`, `quarkus-micrometer-registry-prometheus`
@@ -809,6 +818,7 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 
 ## Tips
 
+- [2026-06] **Latest Cargo Tracker v5 review findings integrated.** Key fixes: SSE lazy initialization pattern for @ApplicationScoped beans, method-level @Transactional rules, dead test cleanup detection, and Dockerfile JAR type verification.
 - [2026-06] **Always explicitly set the Quarkus version to the LTS.** Without explicit `quarkus.platform.version=3.33.2`, the ATX agent may use an older release. Confirm in pom.xml: `<quarkus.platform.version>3.33.2</quarkus.platform.version>` or Gradle: `id 'io.quarkus' version '3.33.2'`.
 - [2026-06] **`@RolesAllowed` without a security extension is silently ignored.** Adding `@RolesAllowed` to a method or class does nothing unless a Quarkus security extension (`quarkus-security` + an identity provider) is also in the dependencies. Always verify: `grep -rn 'quarkus-security\|quarkus-oidc\|quarkus-elytron' pom.xml build.gradle`.
 - [2026-03] Quarkus 3.33 is the current LTS (Long Term Support) version. LTS releases are supported for 12 months. Use `quarkus update` CLI command to update existing Quarkus apps between versions.
