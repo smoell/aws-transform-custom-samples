@@ -75,6 +75,7 @@ See `references/worked-examples-conditional.md` for detailed before/after code e
 | `JSF_NEEDED` | `.xhtml` files, `javax.faces.*` imports | Phase 4 (UI) |
 | `HAS_JSF_NAMESPACE_TYPO` | `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` | Fix IMMEDIATELY — rename to jakarta.faces.* |
 | `HAS_DOTTED_NAMED_BEANS` | `grep -rn '@Named(".*\\..*")' src/main/java/` | Phase 2 (CDI migration) |
+| `HAS_JNDI_LOOKUPS` | `grep -rn 'new InitialContext\|context\.lookup' src/main/java/ | grep -v '//'` | P0 BLOCKER — JNDI not supported at runtime on Quarkus |
 | `HAS_JSP` | `find src/ -name '*.jsp' | head -1` returns a result | Phase 4 — JSP files must be migrated to Facelets or removed; Quarkus undertow has no JSP compiler |
 | `BATCH_NEEDED` | `find src/ -name '*.xml' -path '*META-INF/batch-jobs*' | head -1 || grep -rn 'jakarta.batch\|javax.batch' src/main/java/ | head -1` | Phase 3 (Batch) |
 | `MAIL_NEEDED` | `grep -rn 'jakarta.mail\|javax.mail\|@Resource.*mail\|Session.getInstance' src/main/java/` | Phase 3 (Mail) |
@@ -120,6 +121,7 @@ my-app/
 - Change packaging from WAR/EAR to JAR
 - Add `quarkus-maven-plugin` with build goal
 - Add core extensions based on Phase 0 flags (quarkus-arc always, plus quarkus-rest, hibernate-orm, etc. as needed)
+- Remove ALL `jakarta.ejb:jakarta.ejb-api` dependencies from pom.xml/build.gradle after migration. The EJB API must not be on the classpath — it enables compiling EJB-specific exceptions (`jakarta.ejb.FinderException`) and patterns that won't work at runtime. Detection: `grep -rn 'ejb-api\|jakarta.ejb' pom.xml build.gradle`
 
 CRITICAL: Always set `quarkus.platform.version=3.33.x` (current LTS). The ATX agent may default to a different Quarkus version if not explicitly specified. The recommended property in pom.xml: `<quarkus.platform.version>3.33.2</quarkus.platform.version>`. For Gradle: `id 'io.quarkus' version '3.33.2'`.
 
@@ -246,6 +248,8 @@ Exit: `./mvnw clean compile` passes.
 
 **Step 6**: Migrate EJBs to CDI beans.
 
+If the original app has a static initializer that parses persistence.xml (e.g., to check shared cache mode), remove it — persistence.xml does not exist in Quarkus (config is in application.properties). Detection: `grep -rn 'persistence.xml\|getResourceAsStream.*persistence' src/main/java/`. The static block will throw NPE when persistence.xml is not found.
+
 - @Stateless → @ApplicationScoped + @Transactional (only for persistence operations)
 - @Singleton → @ApplicationScoped (add StartupEvent observer if @Startup present)
 - @Stateful → @SessionScoped (evaluate if stateful pattern still needed)
@@ -253,6 +257,8 @@ Exit: `./mvnw clean compile` passes.
 - Remove @LocalBean, @Local, @Remote annotations
 - Add no-arg constructor for normal-scoped beans (ArC proxy requirement)
 - *(see `references/ejb-to-cdi-mapping.md` for complete mapping table and examples)*
+
+The `@Resource` annotation (for container-managed resources like ScheduledExecutorService, ManagedThreadFactory) is not supported in Quarkus CDI beans. Replace with direct initialization: `private ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor();` or use `@Inject ManagedExecutor` for CDI-managed executors. Detection: `grep -rn '@Resource' src/main/java/ | grep -v '//\|import'`
 
 **@TransactionAttribute mapping**: See reference table in `references/ejb-to-cdi-mapping.md`
 - Apply @Transactional at method level, not class level
@@ -348,6 +354,8 @@ Detection: `grep -rn '@WebFilter\|@WebListener\|implements Filter\|implements Se
 
 **Step 12** (if HAS_JNDI): Replace JNDI lookups.
 
+Legacy configuration classes with 30+ hardcoded static fields (like `TradeConfig.MAX_USERS=15000`, `TradeConfig.DATASOURCE='java:comp/env/...'`) must be converted to a CDI `@ApplicationScoped` configuration bean with `@ConfigProperty` fields. Detection: `grep -rn 'static final.*=.*[0-9]\|static final.*=.*\"java:' src/main/java/`
+
 - `InitialContext.lookup("java:comp/env/...")` → `@Inject` + `@ConfigProperty`:
 
 <!-- Detailed java example: see references/worked-examples-conditional.md -->
@@ -390,6 +398,8 @@ quarkus.http.auth.basic=true
 ```
 
 **Step 14** (if JMS_NEEDED or MDB_NEEDED): Migrate messaging. See `references/jms-to-smallrye.md` for detailed patterns.
+
+After migrating JMS producers, verify that Queue and Topic objects are obtained via CDI injection (from a CDI producer), NOT via null getter methods. Detection: `grep -rn 'getTradeBrokerQueue\|getTradeStreamerTopic\|return null' src/main/java/ | grep -i 'queue\|topic'`. Fix: Add `@Inject Queue queueName` and `@Inject Topic topicName` fields where JMS producers exist.
 
 **Option A — Keep JMS API** (minimal change, same programming model):
 
@@ -587,6 +597,7 @@ Key actions:
 - **`@ViewScoped`** → `@RequestScoped` or stateless endpoint (Qute is stateless by design — no server-side view state).
 - **`@FlowScoped`** → multi-step form patterns with hidden fields or URL path segments.
 - **`f:setPropertyActionListener` targeting an implicit EL variable (`#{taskForDeletion}`) does NOT work with ArC CDI.** In original JSF managed beans, implicit EL maps allowed setting transient variables. In Quarkus/ArC, every EL-accessible object must be a CDI bean with explicit scope. Fix: Replace `f:setPropertyActionListener target="#{implicitVar}"` with direct method parameter passing: `action="#{controller.method(item)}"` using JSF EL method expressions.
+- **Service locator anti-pattern**: JSF backing beans that mix `@Inject TradeAction tradeAction` fields with `new TradeAction()` calls in some methods create inconsistency. The `new TradeAction()` bypasses the CDI producer and may call static initializers (JNDI, persistence.xml). Replace ALL `new TradeAction()` usages with the injected field. Detection: `grep -rn 'new TradeAction\(\)' src/main/java/`
 - **PrimeFaces/RichFaces components** → standard HTML + HTMX or JavaScript library. This is significant effort — flag for human review if >10 PrimeFaces-specific components exist.
 - Delete `faces-config.xml`, `src/main/webapp/WEB-INF/web.xml` (if only JSF config remained), and all `.xhtml` files after conversion.
 
@@ -657,6 +668,8 @@ Migration:
 - No ShrinkWrap imports remaining: `grep -rn "shrinkwrap\|ShrinkWrap" src/test/` — must return empty
 - No JUnit 4 `@Test` (org.junit.Test) remaining: `grep -rn "import org.junit.Test" src/test/` — must return empty (should be `org.junit.jupiter.api.Test`)
 - Test count: verify migrated test count matches original (no tests dropped)
+
+**Test efficacy guidance**: For Gradle projects, use `./gradlew test` in validationCommands (not `./gradlew build -x test`). `./gradlew build -x test` skips tests AND does not produce surefire XML — BES test efficacy will be 0.00. For Maven: `./mvnw clean verify`. For Gradle: `./gradlew test` or `./gradlew build`.
 
 ### Phase 5: Deployment & Verification (ALWAYS)
 
@@ -803,6 +816,7 @@ Load reference files on demand when the worker encounters these signals:
 12. No old app-server Containerfile/Dockerfile at project root — only `src/main/docker/Dockerfile.jvm` should exist
 13. No old integration test modules targeting WildFly/TomEE/Liberty in the active build
 14. JSF namespace typo check passes: `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` returns zero results
+15. **CRITICAL**: `javax.naming.InitialContext` and `javax.naming.NamingException` are Java SE packages and pass the standard `javax.*` exclusion check, but JNDI lookups (`context.lookup(...)`) will fail at runtime on Quarkus. Add an explicit scan: `grep -rn 'InitialContext\|context\.lookup\|InitialContext()' src/main/java/ | grep -v '//'` — any result is a P0 runtime failure. Replace ALL JNDI lookups with CDI injection.
 
 Additional validations: See `references/phase0-detection-flags.md`
 
@@ -818,6 +832,12 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 
 ## Tips
 
+- [2026-06] **After JMS migration, verify Queue/Topic objects come from CDI injection, not getter methods returning null.** JMS send() will NPE silently if the destination is null. Detection: `grep -rn 'return null' src/main/java/ | grep -i 'queue\|topic'`
+- [2026-06] **Remove static blocks that parse persistence.xml.** Quarkus has no persistence.xml (config is in application.properties). Static classpath resource lookups for this file return null and cause NPE at class load time.
+- [2026-06] **`@Resource` is not supported in Quarkus CDI beans** for container resources (ScheduledExecutorService, ManagedThreadFactory, etc.). Use direct initialization or `@Inject ManagedExecutor`.
+- [2026-06] **`javax.naming.InitialContext` passes the `javax.*` exclusion check but JNDI fails at runtime on Quarkus.** Always add an explicit JNDI scan: `grep -rn 'new InitialContext\|context\.lookup' src/main/java/`. Any result is a P0 blocker.
+- [2026-06] **For Gradle projects, `./gradlew build -x test` skips tests entirely — use `./gradlew test` in `validationCommands` to get test data for BES scoring.**
+- [2026-06] **Remove `jakarta.ejb:jakarta.ejb-api` from build dependencies** after migration. Keeping it allows compiling EJB-specific code that won't run on Quarkus.
 - [2026-06] **Latest Cargo Tracker v5 review findings integrated.** Key fixes: SSE lazy initialization pattern for @ApplicationScoped beans, method-level @Transactional rules, dead test cleanup detection, and Dockerfile JAR type verification.
 - [2026-06] **Always explicitly set the Quarkus version to the LTS.** Without explicit `quarkus.platform.version=3.33.2`, the ATX agent may use an older release. Confirm in pom.xml: `<quarkus.platform.version>3.33.2</quarkus.platform.version>` or Gradle: `id 'io.quarkus' version '3.33.2'`.
 - [2026-06] **`@RolesAllowed` without a security extension is silently ignored.** Adding `@RolesAllowed` to a method or class does nothing unless a Quarkus security extension (`quarkus-security` + an identity provider) is also in the dependencies. Always verify: `grep -rn 'quarkus-security\|quarkus-oidc\|quarkus-elytron' pom.xml build.gradle`.
