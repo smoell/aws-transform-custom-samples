@@ -248,6 +248,8 @@ Exit: `./mvnw clean compile` passes.
 
 **Step 6**: Migrate EJBs to CDI beans.
 
+**CRITICAL THREAD-SAFETY FIX**: Beans with mutable instance state (fields like `inSession`, `inGlobalTxn` that change per-request) MUST be `@RequestScoped`, NOT `@ApplicationScoped`. An `@ApplicationScoped` bean is a singleton — concurrent requests will corrupt mutable fields. Detection: `grep -rn '@ApplicationScoped' src/main/java/ -A5 | grep -i 'inSession\|inGlobal\|mutable\|boolean.*=.*false'`. Fix: Change to `@RequestScoped`.
+
 If the original app has a static initializer that parses persistence.xml (e.g., to check shared cache mode), remove it — persistence.xml does not exist in Quarkus (config is in application.properties). Detection: `grep -rn 'persistence.xml\|getResourceAsStream.*persistence' src/main/java/`. The static block will throw NPE when persistence.xml is not found.
 
 - @Stateless → @ApplicationScoped + @Transactional (only for persistence operations)
@@ -265,6 +267,10 @@ The `@Resource` annotation (for container-managed resources like ScheduledExecut
 - Use appropriate TxType (REQUIRED, REQUIRES_NEW, etc.)
 - Remove class-level `@Transactional` from service beans. Add `@Transactional` only to methods that write to the database. Methods that call external REST services (like `requestPossibleRoutesForCargo()`) must NOT have `@Transactional` — holding a DB connection during network I/O wastes pool resources. Detection: `grep -rn '@Transactional' src/main/java/ | grep -v '//'` — for each class-level annotation, split to method-level.
 - *(see references/ for remaining transaction patterns)*
+
+**Arc.container() Anti-Pattern Fix**: After CDI migration, scan for remaining `Arc.container()` programmatic lookups — these are a fragile service-locator pattern. Each one should become an `@Inject` field instead. Detection: `grep -rn 'Arc\.container()' src/main/java/`. For `@WebServlet` classes, CDI field injection works directly. For non-CDI classes (Thread subclasses, static contexts), `Arc.container()` is acceptable as a last resort — but must use `.instance(Type.class).get()` correctly.
+
+**CDI Producer Bypass Fix**: If a class has a CDI producer (`@Produces @RequestScoped TradeAction getTradeAction()`), calling `new TradeAction()` directly bypasses the producer and may call static initializers (JNDI lookups, persistence.xml parsing). Detection: For each `@Produces`-annotated method, check for direct `new ClassName()` calls throughout the codebase: `grep -rn 'new <ProducedClassName>()' src/main/java/`.
 
 **Step 7**: Migrate JPA configuration.
 
@@ -398,6 +404,9 @@ quarkus.http.auth.basic=true
 ```
 
 **Step 14** (if JMS_NEEDED or MDB_NEEDED): Migrate messaging. See `references/jms-to-smallrye.md` for detailed patterns.
+
+**@Blocking required for JMS calls in RESTEasy Reactive endpoints.** Quarkus RESTEasy Reactive (quarkus-rest) runs on IO threads by default. Any blocking JMS operations (send, receive, createContext) inside a REST endpoint will cause runtime warnings or errors. Add `@io.smallrye.common.annotation.Blocking` to the REST endpoint method or class, OR use `quarkus-rest-client` reactive patterns. Detection: `grep -rn 'JMSContext\|createContext\|send.*Message\|receive.*Message' src/main/java/ | grep -rn '@GET\|@POST\|@Path'` — if JMS calls are in REST endpoint methods, add @Blocking.
+
 
 After migrating JMS producers, verify that Queue and Topic objects are obtained via CDI injection (from a CDI producer), NOT via null getter methods. Detection: `grep -rn 'getTradeBrokerQueue\|getTradeStreamerTopic\|return null' src/main/java/ | grep -i 'queue\|topic'`. Fix: Add `@Inject Queue queueName` and `@Inject Topic topicName` fields where JMS producers exist.
 
@@ -832,6 +841,9 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 
 ## Tips
 
+- [2026-06] **JMS operations in RESTEasy Reactive endpoints require `@Blocking`.** Quarkus RESTEasy Reactive runs on IO threads — blocking JMS calls will deadlock or warn. Annotate the REST method/class with `@io.smallrye.common.annotation.Blocking` when using JMS inside JAX-RS endpoints.
+- [2026-06] **`@ApplicationScoped` beans must NOT have mutable instance state.** They are singletons — concurrent requests corrupt instance fields. If a class needs per-request state (like `inSession`, `inGlobalTxn`, `currentUser`), use `@RequestScoped`.
+- [2026-06] **Scan for `Arc.container()` after migration.** Each occurrence is a fragile service-locator call that should be replaced with `@Inject`. Detection: `grep -rn 'Arc\.container()' src/main/java/`. More than 5 occurrences indicates the CDI migration is incomplete.
 - [2026-06] **After JMS migration, verify Queue/Topic objects come from CDI injection, not getter methods returning null.** JMS send() will NPE silently if the destination is null. Detection: `grep -rn 'return null' src/main/java/ | grep -i 'queue\|topic'`
 - [2026-06] **Remove static blocks that parse persistence.xml.** Quarkus has no persistence.xml (config is in application.properties). Static classpath resource lookups for this file return null and cause NPE at class load time.
 - [2026-06] **`@Resource` is not supported in Quarkus CDI beans** for container resources (ScheduledExecutorService, ManagedThreadFactory, etc.). Use direct initialization or `@Inject ManagedExecutor`.
