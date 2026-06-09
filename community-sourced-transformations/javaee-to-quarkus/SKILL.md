@@ -229,6 +229,10 @@ Remove all app server descriptors after extraction (jboss-web.xml, persistence.x
 
 - **Remove web.xml** unless HAS_SERVLET_FILTERS=true. If servlet filters exist, migrate filter definitions to Quarkus `@ServerFilter` or JAX-RS `ContainerRequestFilter` before removing web.xml.
 
+
+**ServiceLoader SPI files (`META-INF/services/`) in Quarkus:** If the original app uses ServiceLoader SPI to register `ConfigSource`, `ConfigSourceProvider`, or `Converter` implementations via `META-INF/services/` files, these continue to work in Quarkus JVM mode but bypass build-time optimization. For idiomatic Quarkus: annotate custom `ConfigSource` implementations with `@io.quarkus.runtime.configuration.StaticInitSafe` to indicate they're safe to use at static init time, and consider CDI registration where applicable. Detection: `find src/ -path '*/META-INF/services/*' -type f`
+
+**MicroProfile Config properties file:** MicroProfile apps may use `microprofile-config.properties` (in `META-INF/`) as their config file instead of Quarkus's `application.properties`. Both work in Quarkus, but the convention is `application.properties`. The `microprofile-config.properties` takes precedence at ordinal 100; `application.properties` also at 100 — combine or migrate content to `application.properties` for consistency.
 **Step 5**: Clean up application structure.
 
 - No main class needed (Quarkus generates entry point at build time)
@@ -842,6 +846,7 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 ## Tips
 
 - [2026-06] **JMS operations in RESTEasy Reactive endpoints require `@Blocking`.** Quarkus RESTEasy Reactive runs on IO threads — blocking JMS calls will deadlock or warn. Annotate the REST method/class with `@io.smallrye.common.annotation.Blocking` when using JMS inside JAX-RS endpoints.
+- [2026-06] **ServiceLoader SPI in `META-INF/services/` works in Quarkus JVM mode but bypasses build-time optimization.** For custom MicroProfile `ConfigSource` implementations, annotate with `@StaticInitSafe` and consider CDI registration. Detection: `find src/ -path '*/META-INF/services/*' -type f`
 - [2026-06] **`@ApplicationScoped` beans must NOT have mutable instance state.** They are singletons — concurrent requests corrupt instance fields. If a class needs per-request state (like `inSession`, `inGlobalTxn`, `currentUser`), use `@RequestScoped`.
 - [2026-06] **Scan for `Arc.container()` after migration.** Each occurrence is a fragile service-locator call that should be replaced with `@Inject`. Detection: `grep -rn 'Arc\.container()' src/main/java/`. More than 5 occurrences indicates the CDI migration is incomplete.
 - [2026-06] **After JMS migration, verify Queue/Topic objects come from CDI injection, not getter methods returning null.** JMS send() will NPE silently if the destination is null. Detection: `grep -rn 'return null' src/main/java/ | grep -i 'queue\|topic'`
