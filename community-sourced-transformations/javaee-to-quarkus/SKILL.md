@@ -855,6 +855,7 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 
 ## Tips
 
+- [2026-06] **JAX-WS `@WebService` → quarkus-cxf extension.** Add `io.quarkus:quarkus-cxf` and configure the endpoint path in application.properties. Alternatively convert to JAX-RS if the WSDL is simple.
 - [2026-06] **JMS operations in RESTEasy Reactive endpoints require `@Blocking`.** Quarkus RESTEasy Reactive runs on IO threads — blocking JMS calls will deadlock or warn. Annotate the REST method/class with `@io.smallrye.common.annotation.Blocking` when using JMS inside JAX-RS endpoints.
 - [2026-06] **ServiceLoader SPI in `META-INF/services/` works in Quarkus JVM mode but bypasses build-time optimization.** For custom MicroProfile `ConfigSource` implementations, annotate with `@StaticInitSafe` and consider CDI registration. Detection: `find src/ -path '*/META-INF/services/*' -type f`
 - [2026-06] **`@ApplicationScoped` beans must NOT have mutable instance state.** They are singletons — concurrent requests corrupt instance fields. If a class needs per-request state (like `inSession`, `inGlobalTxn`, `currentUser`), use `@RequestScoped`.
