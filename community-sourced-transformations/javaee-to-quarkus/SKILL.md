@@ -463,6 +463,15 @@ Examples: See `references/jms-to-smallrye.md`
 - **Message selectors**: not directly supported in SmallRye — implement filtering logic in the consumer method or use separate channels per message type.
 - **Dead-letter queue**: configure via broker-specific properties (`dead-letter-queue`, `failure-strategy=dead-letter-queue`).
 
+**AMQP/SmallRye Reactive Messaging — dev/test in-memory connector:** If the migrated app uses SmallRye Reactive Messaging with AMQP (`mp.messaging.outgoing/incoming.*`), add a dev/test profile with the in-memory connector to avoid requiring a running AMQP broker during development:
+```
+%dev.mp.messaging.outgoing.<channel>.connector=smallrye-in-memory
+%dev.mp.messaging.incoming.<channel>.connector=smallrye-in-memory
+%test.mp.messaging.outgoing.<channel>.connector=smallrye-in-memory
+%test.mp.messaging.incoming.<channel>.connector=smallrye-in-memory
+```
+Without this, `quarkus:dev` will fail to start if no AMQP broker is running.
+
 **Step 15** (if SOAP_NEEDED): Migrate SOAP web services.
 
 **Option A — Keep SOAP** (minimal change with Apache CXF):
@@ -611,6 +620,7 @@ Key actions:
 - **`@FlowScoped`** → multi-step form patterns with hidden fields or URL path segments.
 - **`f:setPropertyActionListener` targeting an implicit EL variable (`#{taskForDeletion}`) does NOT work with ArC CDI.** In original JSF managed beans, implicit EL maps allowed setting transient variables. In Quarkus/ArC, every EL-accessible object must be a CDI bean with explicit scope. Fix: Replace `f:setPropertyActionListener target="#{implicitVar}"` with direct method parameter passing: `action="#{controller.method(item)}"` using JSF EL method expressions.
 - **Service locator anti-pattern**: JSF backing beans that mix `@Inject TradeAction tradeAction` fields with `new TradeAction()` calls in some methods create inconsistency. The `new TradeAction()` bypasses the CDI producer and may call static initializers (JNDI, persistence.xml). Replace ALL `new TradeAction()` usages with the injected field. Detection: `grep -rn 'new TradeAction\(\)' src/main/java/`
+- **Remove dead `@Named` JSF backing beans after JSF removal:** If JSF was present in the original app and is removed (or if JSF templates were replaced with REST endpoints), any `@Named @RequestScoped` CDI beans that were JSF backing beans become dead code — they are no longer referenced by any .xhtml template or injected by any other class. Detection: `grep -rn '@Named' src/main/java/ | grep -v '//'` — cross-check each @Named class is actually referenced somewhere. Remove orphaned @Named beans.
 - **PrimeFaces/RichFaces components** → standard HTML + HTMX or JavaScript library. This is significant effort — flag for human review if >10 PrimeFaces-specific components exist.
 - Delete `faces-config.xml`, `src/main/webapp/WEB-INF/web.xml` (if only JSF config remained), and all `.xhtml` files after conversion.
 
@@ -850,6 +860,8 @@ See `references/arc-limitations.md` for ArC-specific issues. Additional common m
 - [2026-06] **`@ApplicationScoped` beans must NOT have mutable instance state.** They are singletons — concurrent requests corrupt instance fields. If a class needs per-request state (like `inSession`, `inGlobalTxn`, `currentUser`), use `@RequestScoped`.
 - [2026-06] **Scan for `Arc.container()` after migration.** Each occurrence is a fragile service-locator call that should be replaced with `@Inject`. Detection: `grep -rn 'Arc\.container()' src/main/java/`. More than 5 occurrences indicates the CDI migration is incomplete.
 - [2026-06] **After JMS migration, verify Queue/Topic objects come from CDI injection, not getter methods returning null.** JMS send() will NPE silently if the destination is null. Detection: `grep -rn 'return null' src/main/java/ | grep -i 'queue\|topic'`
+- [2026-06] **SmallRye Reactive Messaging AMQP channels need an in-memory dev/test profile.** Without it, `quarkus:dev` fails if no AMQP broker is running. Add `%dev.mp.messaging.*.connector=smallrye-in-memory` for each channel in `application.properties`.
+- [2026-06] **`@Named` JSF backing beans become dead code if JSF is removed.** After removing JSF, scan for orphaned `@Named` beans that have no template references. Detection: `grep -rn '@Named' src/main/java/`
 - [2026-06] **Remove static blocks that parse persistence.xml.** Quarkus has no persistence.xml (config is in application.properties). Static classpath resource lookups for this file return null and cause NPE at class load time.
 - [2026-06] **`@Resource` is not supported in Quarkus CDI beans** for container resources (ScheduledExecutorService, ManagedThreadFactory, etc.). Use direct initialization or `@Inject ManagedExecutor`.
 - [2026-06] **`javax.naming.InitialContext` passes the `javax.*` exclusion check but JNDI fails at runtime on Quarkus.** Always add an explicit JNDI scan: `grep -rn 'new InitialContext\|context\.lookup' src/main/java/`. Any result is a P0 blocker.
