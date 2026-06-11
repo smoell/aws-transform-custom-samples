@@ -139,3 +139,12 @@ javax.transaction → jakarta.transaction
 - Legacy import/annotation/descriptor scans
 - Docker image build verification
 - Container smoke test
+
+## Phase 5: Container Image Replacement Table
+| Old image pattern | Quarkus replacement |
+|-------------------|---------------------|
+| quay.io/wildfly/wildfly:* | registry.access.redhat.com/ubi8/openjdk-17:latest |
+| jboss/wildfly | quay.io/quarkus/ubi-quarkus-native-image:* |
+| /eap[0-9]* | registry.access.redhat.com/jboss-eap-7/eap74-openjdk11-openshift-rhel8 → migrate to UBI |
+
+Scan command: `grep -rEn 'wildfly|jboss|eap[0-9]' charts/ k8s/ deploy/ helm/ README.md **/*.yaml`

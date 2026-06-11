@@ -630,3 +630,10 @@ public class OrderService {
 1. Extract method to a separate bean (preferred — clean architecture)
 2. Use `Arc.container().instance(MyBean.class).get().method()` (programmatic proxy access)
 3. Inject `Instance<MyBean>` and call through it
+
+## @ConversationScoped → @SessionScoped Fallback
+Quarkus ArC does NOT support @ConversationScoped. Use @SessionScoped as fallback:
+- Bean must implement `java.io.Serializable`
+- All injected fields must be Serializable
+- State collision risk: different users share session-scoped state only within their own HTTP session
+- For fine-grained conversation control: use @ViewScoped (JSF) or explicit client-side state
