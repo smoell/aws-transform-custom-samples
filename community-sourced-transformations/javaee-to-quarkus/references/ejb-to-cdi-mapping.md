@@ -637,3 +637,6 @@ Quarkus ArC does NOT support @ConversationScoped. Use @SessionScoped as fallback
 - All injected fields must be Serializable
 - State collision risk: different users share session-scoped state only within their own HTTP session
 - For fine-grained conversation control: use @ViewScoped (JSF) or explicit client-side state
+
+## @Stateful EJB — Non-HTTP Client Warning
+@Stateful → @SessionScoped works for HTTP-triggered flows only. For remote callers, scheduled jobs, or background processes: use @ApplicationScoped + explicit state map, or CDI @ConversationScoped emulation via a request-scoped correlation ID. Do NOT use @SessionScoped for non-HTTP scenarios.

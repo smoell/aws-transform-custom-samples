@@ -1,5 +1,20 @@
 # Batch Processing: JBeret Fallback Pattern
 
+## Decision Tree
+
+**Primary Path: quarkus-jberet**
+1. Add `quarkus-jberet` extension
+2. Attempt build: `./mvnw clean compile`
+3. If successful → continue with standard JBeret migration
+
+**Fallback Trigger Signals:**
+- **ClassNotFoundException** during build for batch-related classes
+- **NoSuchMethodError** at runtime for JBeret APIs
+- **UnsatisfiedLinkError** or native linking issues
+
+**Fallback Path: CDI-based Manual Implementation**
+When quarkus-jberet fails, replace with CDI-based batch processing (see below).
+
 ## Problem
 `quarkus-jberet` has limited compatibility with newer Quarkus versions and may fail during migration.
 
