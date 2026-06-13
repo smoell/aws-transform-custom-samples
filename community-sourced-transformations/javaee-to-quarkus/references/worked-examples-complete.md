@@ -135,3 +135,20 @@ public class OrderService {
 - Memory footprint: 512MB → 128MB
 - Startup time: 45s → 2.3s
 - All 47 integration tests passing
+
+## DayTrader 7 — Complex Multi-Pattern Migration (JMS + JPA + JSF + EAR)
+
+**Complexity:** 25K LOC, 8 modules, Gradle + EAR, 4 iterations to PASS
+
+**Key Challenges:**
+1. Gradle EAR → single Quarkus JAR (settings.gradle rewrite, ear plugin removal)
+2. 6 MDBs → SmallRye Reactive Messaging consumers
+3. JSF pages → MyFaces Quarkus with META-INF/resources relocation
+4. Multiple DataSources → named Agroal datasources in application.properties
+
+**Test Setup (Testcontainers):**
+- `@QuarkusTestResource` with Artemis container for JMS
+- PostgreSQL Testcontainers for JPA
+- REST-assured for endpoint verification
+
+**Lesson:** EAR consolidation must happen BEFORE namespace migration. Running javax→jakarta on individual modules creates merge conflicts when combining later.

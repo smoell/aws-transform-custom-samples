@@ -2,6 +2,19 @@
 
 > Reference for Phase 2: Core Migration — EJB to Quarkus CDI bean conversion.
 
+## @TransactionAttribute → @Transactional Mapping
+
+| EJB TransactionAttribute | Quarkus @Transactional | Notes |
+|--------------------------|----------------------|-------|
+| REQUIRED (default) | @Transactional (or omit) | Default in both |
+| REQUIRES_NEW | @Transactional(REQUIRES_NEW) | |
+| MANDATORY | @Transactional(MANDATORY) | |
+| SUPPORTS | @Transactional(SUPPORTS) | |
+| NOT_SUPPORTED | @Transactional(NOT_SUPPORTED) | |
+| NEVER | @Transactional(NEVER) | |
+
+**Phase 2 validation:** `grep -rn '@TransactionAttribute' src/main/java/` must return empty after migration.
+
 ## EJB Stereotype Mapping
 
 | EJB Annotation | Quarkus CDI Equivalent | Notes |

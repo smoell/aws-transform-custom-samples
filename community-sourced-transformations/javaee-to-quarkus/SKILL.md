@@ -54,7 +54,7 @@ See `references/worked-examples-complete.md` for complete worked migration examp
 | Servlet | quarkus-rest | @WebServlet → @Path + @GET/POST |
 | JPA | quarkus-hibernate-orm | @PersistenceContext → @Inject |
 | JMS/MDB | quarkus-smallrye-reactive-messaging | MDB → @Incoming/@Outgoing channels, reactive messaging; requires @Blocking on REST endpoints calling JMS/messaging |
-| JSF | quarkus-undertow + myfaces-quarkus | See [JSF→MyFaces pattern](references/pattern-jsf-myfaces.md) |
+| JSF | quarkus-undertow + myfaces-quarkus | See [JSF→MyFaces pattern](references/jsf-migration-patterns.md) |
 | Batch | quarkus-jberet (limited compat) — fallback: CDI-based @ApplicationScoped beans with manual ItemReader/Processor/Writer composition | See references/batch-jberet-fallback.md |
 | Security | quarkus-security | @RolesAllowed unchanged |
 | JASPIC | quarkus-security | ServerAuthModule → properties-file authentication, @RolesAllowed preserved |
@@ -78,7 +78,7 @@ See `references/worked-examples-complete.md` for complete worked migration examp
 - JPA: @PersistenceContext → @Inject EntityManager  
 - JAX-RS: @Path, @GET, @POST stay unchanged
 - Servlet→JAX-RS: @WebServlet → @Path, doGet()/doPost() → @GET/@POST methods
-- JSF: Use MyFaces extension → [details](references/pattern-jsf-myfaces.md)
+- JSF: Use MyFaces extension → [details](references/jsf-migration-patterns.md)
 - Remote EJB: Not supported → [migration strategies](references/pattern-remote-ejb-limitation.md)
 
 ## Reference Index
@@ -123,6 +123,9 @@ For mid-migration failures:
 - `git restore .` reverts all changes to pre-migration state
 - Re-run with updated TD version after fixing the pattern in SKILL.md
 
+## Exit Status
+**0**: Success | **1**: Blocker detected (BLOCKERS.md emitted) | **NO_OP**: Already Quarkus | **WRONG_FRAMEWORK**: Spring Boot
+
 **Non-Goals (require separate handling):**
 - EJB Remote/IIOP, JCA Resource Adapters, EJB 2.x Entity Beans
 - CDI Portable Extensions → must convert to Quarkus BuildExtension  
@@ -150,12 +153,15 @@ For mid-migration failures:
 - [ ] No JNDI lookups: `grep -rn 'InitialContext\|context\.lookup' src/` returns empty
 - [ ] JSF namespace check: `grep -rn "jakarta\.face\." src/ | grep -v "jakarta\.faces\."` returns empty
 - [ ] Deployment manifests (Helm/K8s) reference Quarkus image, correct ports, and health probes
+- [ ] No WildFly/JBoss/quickstart references in deployment manifests: `grep -rn -E "wildfly|jboss|quickstart" charts/ k8s/ deploy/ helm/ 2>/dev/null` returns empty
 - [ ] Helm/K8s manifests updated
 
 ## Migration Phases — Checklist Format
 
 **Phase 0: Project Analysis (ALWAYS)**
 - [ ] Scan for REMOTE_EJB_DETECTED → HALT if found
+- [ ] Scan for EJB 2.x Entity Beans: `grep -rn 'extends javax.ejb.EntityBean\|implements EntityBean' src/` → HALT if found (not supported)
+- [ ] Scan for CDI Portable Extensions: `grep -rn 'implements Extension\|META-INF/services/javax.enterprise.inject.spi.Extension' src/` → WARNING if found (may need manual review)
 - [ ] Scan for CONVERSATION_SCOPED: `grep -rn '@ConversationScoped' src/main/java/` → if found: set CONVERSATION_SCOPED_FALLBACK=true → Phase 2 will apply @SessionScoped fallback and emit warning to MIGRATION-WARNINGS.md
 - [ ] Scan for ELYTRON_SECURITY_DOMAIN: `grep -rn 'security-domain\|@SecurityDomain\|Elytron\|SecurityContext.*runAs' src/` AND `grep -l '<security-domain>\|security-domain=' jboss-ejb3.xml jboss-web.xml jboss-app.xml 2>/dev/null` → if found: **HALT** + emit BLOCKERS.md entry (EJB security context propagation not portable — requires redesign with quarkus-security/JWT; see pattern-remote-ejb-limitation.md)
 - [ ] Set feature flags: EJB_NEEDED, JMS_NEEDED, JSF_NEEDED, SECURITY_NEEDED
@@ -171,6 +177,8 @@ For mid-migration failures:
 - [ ] Multi-module EAR/WAR consolidation: merge ejb-jar + war modules into single Quarkus module; remove ear packaging
 - [ ] Namespace migration: javax.* → jakarta.* (EE packages only)
 - [ ] Extract persistence.xml/web.xml → application.properties
+- [ ] Remove src/main/webapp/WEB-INF/web.xml (Quarkus uses application.properties)
+- [ ] Remove META-INF/beans.xml or replace with empty <beans/> (Quarkus uses annotated bean discovery by default)
 - [ ] Build passes: `./mvnw clean compile -Dmaven.test.skip=true`
 
 **Phase 2: Core Migration (CONDITIONAL - if EJB detected)**
@@ -196,9 +204,13 @@ For mid-migration failures:
 - [ ] Test migration: @RunWith(Arquillian)→@QuarkusTest
 - [ ] Remove all @Deployment/ShrinkWrap methods; for JMS/DB integration tests, add testcontainers (ActiveMQ Artemis, PostgreSQL) via @QuarkusTestResource
 - [ ] JSF migration: MyFaces extension or JSF→Qute  
+- [ ] JSF resources: Move src/main/webapp/* (xhtml, images, css) → src/main/resources/META-INF/resources/
+- [ ] Move faces-config.xml → src/main/resources/META-INF/
+- [ ] JSF validation: `find src/main/webapp -name '*.xhtml' 2>/dev/null` should return empty
 - [ ] Tests pass: `./mvnw clean test`
+- [ ] Test count validation: `./mvnw test` must report non-zero test count (if original had tests)
 - Test migration → [arquillian-to-quarkustest.md](references/arquillian-to-quarkustest.md)
-- JSF patterns → [jsf-to-qute.md](references/jsf-to-qute.md)
+- JSF patterns → [jsf-migration-patterns.md](references/jsf-migration-patterns.md)
 
 **Phase 5: Deployment & Verification (ALWAYS)**
 - [ ] Generate Dockerfile.jvm, add health endpoints
@@ -215,9 +227,9 @@ For mid-migration failures:
 | EJB→CDI | Medium | @Stateless→@ApplicationScoped | [ejb-to-cdi-mapping.md](references/ejb-to-cdi-mapping.md) |
 | JPA Persistence | Low | @PersistenceContext→@Inject | [jpa-to-quarkus-persistence.md](references/jpa-to-quarkus-persistence.md) |
 | JMS→SmallRye | Medium | @MessageDriven→@Incoming | [jms-to-smallrye.md](references/jms-to-smallrye.md) |
-| Security Migration | Low | @RolesAllowed unchanged | [security-to-quarkus-security.md](references/security-to-quarkus-security.md) |
-| JSF→MyFaces | Low | Minimal changes, MyFaces extension | [pattern-jsf-myfaces.md](references/pattern-jsf-myfaces.md) |
-| JSF→Qute | High | Template rewrite required | [jsf-to-qute.md](references/jsf-to-qute.md) |
+| Security Migration | Low | @RolesAllowed unchanged | [security-migration.md](references/security-migration.md) |
+| JSF→MyFaces | Low | Minimal changes, MyFaces extension | [jsf-migration-patterns.md](references/jsf-migration-patterns.md) |
+| JSF→Qute | High | Template rewrite required | [jsf-migration-patterns.md](references/jsf-migration-patterns.md) |
 | Remote EJB | **BLOCKER** | Must replace with REST/gRPC | [pattern-remote-ejb-limitation.md](references/pattern-remote-ejb-limitation.md) |
 | Arquillian Tests | Medium | @RunWith→@QuarkusTest | [arquillian-to-quarkustest.md](references/arquillian-to-quarkustest.md) |
 
@@ -266,6 +278,7 @@ See [references/troubleshooting-pitfalls.md](references/troubleshooting-pitfalls
 **Build Verification:**
 ```bash
 ./mvnw clean verify  # Must pass
+# Or for Gradle: ./gradlew build
 ```
 
 **Legacy Content Scans (must return ZERO results):**

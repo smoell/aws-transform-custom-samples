@@ -1,5 +1,12 @@
 # Application Properties Checklist
 
+## MicroProfile Telemetry → Quarkus OpenTelemetry
+
+- Remove WildFly MicroProfile OpenTelemetry subsystem config remnants
+- All `otel.*` properties must be prefixed with `quarkus.` → `quarkus.otel.*`
+- `@WithSpan`, `@SpanAttribute` annotations work unchanged (require `quarkus-opentelemetry` extension)
+- Phase 5 validation: `grep -rn '^otel\.' src/main/resources/application.properties` must return empty
+
 ## Required Properties by Extension
 
 ### Datasource (quarkus-jdbc-*)

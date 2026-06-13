@@ -15,6 +15,9 @@
 | import.sql table errors | Table name mismatch | Set `quarkus.hibernate-orm.physical-naming-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl` |
 | @ConversationScoped failure | ArC doesn't support it | Use `@SessionScoped` + `implements Serializable` |
 
+## Multi-module EAR Test Consolidation
+Tests in `ear/ejb-tests` submodules must be moved to the consolidated module's `src/test/java/` or they are silently dropped during EAR→single-module consolidation. Always verify test count post-migration matches pre-migration count.
+
 ## Common Migration Pitfalls
 
 ### Bean Management Issues
