@@ -42,13 +42,47 @@ quarkus.security.users.embedded.roles.alice=admin,user
 ```
 
 ### JASPIC Migration Pattern
+
+JASPIC `ServerAuthModule` maps to Quarkus `HttpAuthenticationMechanism` (full class rewrite). This is a transitive dependency of `quarkus-rest` — no extra pom.xml entry needed.
+
 ```java
-// Before: ServerAuthModule
+// BEFORE: ServerAuthModule (JASPIC)
 public class CustomAuthModule implements ServerAuthModule {
-    // Complex JASPIC implementation
+    @Override
+    public AuthStatus validateRequest(MessageInfo info, Subject clientSubject, Subject serviceSubject) {
+        // Extract credentials from request, validate, populate subject
+    }
+    // ... initialize(), getSupportedMessageTypes(), etc.
 }
 
-// After: Custom SecurityIdentityAugmentor  
+// AFTER: HttpAuthenticationMechanism (Quarkus Security)
+@ApplicationScoped
+public class CustomAuthMechanism implements HttpAuthenticationMechanism {
+    @Override
+    public Uni<SecurityIdentity> authenticate(RoutingContext context, IdentityProviderManager identityProviderManager) {
+        // Extract credentials from context.request(), call identityProviderManager.authenticate()
+        String token = context.request().getHeader("Authorization");
+        if (token == null) {
+            return Uni.createFrom().nullItem(); // no credentials → skip this mechanism
+        }
+        return identityProviderManager.authenticate(new TokenAuthenticationRequest(token));
+    }
+
+    @Override
+    public Uni<ChallengeData> getChallenge(RoutingContext context) {
+        // Return 401 challenge (equivalent to SEND_CONTINUE in JASPIC)
+        return Uni.createFrom().item(new ChallengeData(401, "WWW-Authenticate", "Bearer"));
+    }
+
+    @Override
+    public Set<Class<? extends AuthenticationRequest>> getCredentialTypes() {
+        return Set.of(TokenAuthenticationRequest.class);
+    }
+}
+```
+
+For simpler cases (augmenting an existing identity with extra roles/attributes):
+```java
 @ApplicationScoped
 public class CustomSecurityAugmentor implements SecurityIdentityAugmentor {
     @Override

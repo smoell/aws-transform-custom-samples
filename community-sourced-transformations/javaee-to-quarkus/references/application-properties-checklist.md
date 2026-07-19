@@ -7,6 +7,80 @@
 - `@WithSpan`, `@SpanAttribute` annotations work unchanged (require `quarkus-opentelemetry` extension)
 - Phase 5 validation: `grep -rn '^otel\.' src/main/resources/application.properties` must return empty
 
+## web.xml env-entry Migration
+
+When migrating `<env-entry>` elements from `web.xml`, do NOT use the JNDI path as the property key.
+
+### Procedure
+
+1. **Identify env-entries** in web.xml:
+```xml
+<env-entry>
+    <env-entry-name>config/emailHost</env-entry-name>
+    <env-entry-type>java.lang.String</env-entry-type>
+    <env-entry-value>smtp.example.com</env-entry-value>
+</env-entry>
+```
+
+2. **Grep source for actual @ConfigProperty key names**:
+```bash
+grep -rn '@ConfigProperty' src/main/java/
+```
+This reveals the actual keys the code expects, e.g. `@ConfigProperty(name = "app.email.host")`.
+
+3. **Map env-entry-value to the correct key** in application.properties:
+```properties
+# WRONG — JNDI path as key (will not be found by code)
+config.emailHost=smtp.example.com
+
+# CORRECT — matches @ConfigProperty(name=...) in source
+app.email.host=smtp.example.com
+```
+
+4. **If no @ConfigProperty exists yet** (code used `@Resource(lookup=...)`): choose a meaningful key name following the `app.` prefix convention, then update the Java code to use `@ConfigProperty(name = "chosen.key")`.
+
+## HTTP Root Path and Health Endpoints
+
+When migrating `jboss-web.xml` context-root or `<context-root>` from `application.xml`:
+
+```properties
+# Sets application root path (equivalent to context-root)
+quarkus.http.root-path=/myapp
+```
+
+**Impact on health endpoints**: Setting `quarkus.http.root-path` shifts ALL paths including non-application endpoints. Health moves to `/myapp/q/health/live` instead of `/q/health/live`.
+
+**To keep health at `/q/health` regardless of root-path**:
+```properties
+quarkus.http.root-path=/myapp
+quarkus.http.non-application-root-path=/q
+```
+
+**K8s probe update**: If probes were `httpGet.path: /q/health/live`, update to `/{root-path}/q/health/live` — or set `non-application-root-path` and keep probes unchanged.
+
+## REST Path Configuration (Application Class Removal)
+
+When removing a JAX-RS `Application` subclass with `@ApplicationPath`, the base path must be preserved in application.properties. The correct property depends on which REST extension is in pom.xml:
+
+| REST Extension in pom.xml | Property Key | Example |
+|---|---|---|
+| `quarkus-rest` (RESTEasy Reactive) | `quarkus.rest.path` | `quarkus.rest.path=/api` |
+| `quarkus-resteasy` (RESTEasy Classic) | `quarkus.resteasy.path` | `quarkus.resteasy.path=/api` |
+
+**WARNING**: Using the wrong property key silently has no effect — the base path reverts to `/` without any error message. Always verify which REST extension is in pom.xml before setting the property.
+
+**Detection**: Check pom.xml for `quarkus-rest` vs `quarkus-resteasy` (or their older names: `quarkus-resteasy-reactive` → `quarkus-rest`).
+
+```java
+// BEFORE — Application class with custom path
+@ApplicationPath("/api")
+public class JaxRsApplication extends Application {}
+
+// AFTER — Remove class entirely, add to application.properties:
+// quarkus.rest.path=/api       (if using quarkus-rest)
+// quarkus.resteasy.path=/api   (if using quarkus-resteasy)
+```
+
 ## Required Properties by Extension
 
 ### Datasource (quarkus-jdbc-*)
@@ -22,13 +96,41 @@ quarkus.hibernate-orm.database.generation=drop-and-create
 quarkus.hibernate-orm.log.sql=false
 ```
 
+### Multi-Datasource Named Configuration
+
+When persistence.xml has multiple `<persistence-unit>` elements or the app uses multiple JNDI datasources:
+
+```properties
+# Default datasource (unnamed — injected with plain @Inject EntityManager)
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/orders
+quarkus.datasource.username=order_user
+quarkus.datasource.password=order_pass
+
+# Named datasource: "inventory"
+quarkus.datasource."inventory".db-kind=postgresql
+quarkus.datasource."inventory".jdbc.url=jdbc:postgresql://localhost:5432/inventory
+quarkus.datasource."inventory".username=inv_user
+quarkus.datasource."inventory".password=inv_pass
+
+# Map named persistence unit to named datasource
+quarkus.hibernate-orm."inventory".datasource=inventory
+quarkus.hibernate-orm."inventory".packages=com.example.inventory.model
+```
+
+Injection in code:
+```java
+@Inject EntityManager defaultEm;                        // default
+@Inject @PersistenceUnit("inventory") EntityManager em; // named
+```
+
 ### Transaction Manager (quarkus-narayana-jta)
 ```properties
 # JTA Configuration
 quarkus.transaction-manager.enable-recovery=false
 quarkus.transaction-manager.default-transaction-timeout=60s
 
-# Optional: Object Store
+# Optional: Object Store (for crash recovery with BMT)
 quarkus.transaction-manager.object-store.directory=tm-object-store
 ```
 
@@ -57,6 +159,11 @@ mp.messaging.outgoing.orders.connector=smallrye-artemis
 mp.messaging.outgoing.orders.address=orders-queue
 mp.messaging.outgoing.orders.host=localhost
 mp.messaging.outgoing.orders.port=61616
+
+# Test profile — in-memory connector (MANDATORY for tests without broker)
+%test.mp.messaging.incoming.orders-in.connector=smallrye-in-memory
+%test.mp.messaging.outgoing.orders-out.connector=smallrye-in-memory
+# Add %test override for EVERY channel defined above
 ```
 
 ### Kafka (quarkus-kafka)

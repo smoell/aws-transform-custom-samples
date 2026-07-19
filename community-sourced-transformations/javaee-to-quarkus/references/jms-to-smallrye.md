@@ -1,7 +1,9 @@
 # JMS/MDB → Quarkus Messaging Reference
 
-> Reference for Phase 3 Step 13: Messaging migration (conditional on JMS_NEEDED or MDB_NEEDED flags).
+> Reference for Phase 3 Step 14: Messaging migration (conditional on JMS_NEEDED or MDB_NEEDED flags).
 > See also: https://quarkus.io/guides/jms and https://quarkus.io/guides/amqp
+
+**Artifact naming**: For Quarkus 3.9+, use the shortened artifact IDs `quarkus-messaging-amqp` and `quarkus-messaging-kafka` (renamed from `quarkus-smallrye-reactive-messaging-amqp`/`-kafka`). Old names still work via Maven relocation but produce warnings.
 
 ## Decision Tree
 
@@ -16,215 +18,83 @@ Is the MDB pattern simple? (single queue/topic consumer, no selectors, no XA)
 
 ### Recommendation Matrix
 
-| Scenario | Recommended Option | Reasoning |
+| Scenario | Option | Reasoning |
 |---|---|---|
-| Simple MDBs, fire-and-forget | Option B (Reactive) | Cleaner code, better cloud-native fit |
-| Request-reply pattern (temp queues) | Option A (JMS API) | Reactive messaging has no request-reply built-in |
-| Message selectors (`selector = "type = 'ORDER'"`) | Option A (JMS API) | Selectors not directly supported in SmallRye |
-| XA distributed transactions (JMS + DB in one TX) | Option A (JMS API) | Reactive messaging does not support XA |
-| Migrating to Kafka in the future | Option B (Reactive) | SmallRye supports both AMQP and Kafka connectors |
-| Many MDBs with simple logic | Option B (Reactive) | Dramatic code reduction |
-| JMS ObjectMessage / MapMessage | Option A (JMS API) | Complex message types easier with JMS API |
-| Cloud-native event-driven architecture | Option B (Kafka) | Kafka is the standard for event streaming |
+| Simple MDBs, fire-and-forget | B (Reactive) | Cleaner code, cloud-native fit |
+| Request-reply (temp queues) | A (JMS API) | No request-reply built into reactive messaging |
+| Message selectors (`type='ORDER'`) | A (JMS API) | Selectors not supported in SmallRye |
+| XA distributed TX (JMS + DB) | A (JMS API) | Reactive messaging has no XA |
+| Migrating to Kafka later | B (Reactive) | SmallRye supports AMQP + Kafka |
+| Many simple MDBs | B (Reactive) | Dramatic code reduction |
+| ObjectMessage / MapMessage | A (JMS API) | Complex message types easier with JMS API |
 
 ---
 
 ## Option A — Keep JMS API (quarkus-artemis-jms)
 
-### Dependencies
+### Dependency & Configuration
 
 ```xml
-<dependency>
-    <groupId>io.quarkiverse.artemis</groupId>
-    <artifactId>quarkus-artemis-jms</artifactId>
-</dependency>
+<dependency><groupId>io.quarkiverse.artemis</groupId><artifactId>quarkus-artemis-jms</artifactId></dependency>
 ```
-
-### application.properties Configuration
 
 ```properties
-# Artemis broker connection
 quarkus.artemis.url=tcp://localhost:61616
 quarkus.artemis.username=admin
-quarkus.artemis.password=admin
-
-# Named connection (if multiple brokers)
-quarkus.artemis."inventory".url=tcp://inventory-broker:61616
-quarkus.artemis."inventory".username=inv_user
-quarkus.artemis."inventory".password=inv_pass
+quarkus.artemis.password=[REDACTED_PASSWORD]
+# Named connection (multiple brokers): quarkus.artemis."inventory".url=tcp://inventory-broker:61616
 ```
 
-### Before/After: @MessageDriven MDB → JMS Consumer Bean
+### @MessageDriven MDB → JMS Consumer Bean
 
 ```java
 // BEFORE (JavaEE MDB)
-import javax.ejb.MessageDriven;
-import javax.ejb.ActivationConfigProperty;
-import javax.jms.Message;
-import javax.jms.MessageListener;
-import javax.jms.TextMessage;
-import javax.ejb.EJB;
-
 @MessageDriven(activationConfig = {
-    @ActivationConfigProperty(
-        propertyName = "destinationType",
-        propertyValue = "javax.jms.Queue"),
-    @ActivationConfigProperty(
-        propertyName = "destination",
-        propertyValue = "java:/jms/queue/OrderQueue"),
-    @ActivationConfigProperty(
-        propertyName = "acknowledgeMode",
-        propertyValue = "Auto-acknowledge"),
-    @ActivationConfigProperty(
-        propertyName = "maxSession",
-        propertyValue = "10")
+    @ActivationConfigProperty(propertyName = "destinationType", propertyValue = "javax.jms.Queue"),
+    @ActivationConfigProperty(propertyName = "destination", propertyValue = "java:/jms/queue/OrderQueue"),
+    @ActivationConfigProperty(propertyName = "acknowledgeMode", propertyValue = "Auto-acknowledge")
 })
 public class OrderMessageHandler implements MessageListener {
-
-    @EJB
-    private OrderService orderService;
-
-    @Override
-    public void onMessage(Message message) {
+    @EJB private OrderService orderService;
+    @Override public void onMessage(Message message) {
         try {
-            if (message instanceof TextMessage) {
-                String payload = ((TextMessage) message).getText();
-                orderService.processOrder(payload);
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to process order message", e);
-        }
+            if (message instanceof TextMessage tm) orderService.processOrder(tm.getText());
+        } catch (Exception e) { throw new RuntimeException("Failed to process order message", e); }
     }
 }
-```
 
-```java
-// AFTER (Quarkus — JMS API consumer with scheduled polling)
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.jms.*;
-import io.quarkus.runtime.StartupEvent;
-import jakarta.enterprise.event.Observes;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
+// AFTER (Quarkus — JMS API consumer, @Scheduled polling pattern)
 @ApplicationScoped
 public class OrderMessageHandler {
-
-    @Inject
-    ConnectionFactory connectionFactory;
-
-    @Inject
-    OrderService orderService;
-
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
-
-    void onStart(@Observes StartupEvent ev) {
-        executor.submit(this::consumeMessages);
-    }
-
-    private void consumeMessages() {
-        try (JMSContext context = connectionFactory.createContext(Session.AUTO_ACKNOWLEDGE)) {
-            Queue queue = context.createQueue("OrderQueue");
-            JMSConsumer consumer = context.createConsumer(queue);
-
-            while (true) {
-                Message message = consumer.receive();
-                if (message instanceof TextMessage textMsg) {
-                    String payload = textMsg.getText();
-                    orderService.processOrder(payload);
-                }
-            }
-        } catch (Exception e) {
-            // log and potentially restart
-            throw new RuntimeException("JMS consumer failed", e);
-        }
-    }
-}
-```
-
-**Alternative — simpler pattern using @Scheduled for polling:**
-
-```java
-@ApplicationScoped
-public class OrderMessageHandler {
-
-    @Inject
-    ConnectionFactory connectionFactory;
-
-    @Inject
-    OrderService orderService;
+    @Inject ConnectionFactory connectionFactory;
+    @Inject OrderService orderService;
 
     @Scheduled(every = "1s")
     void pollMessages() {
         try (JMSContext context = connectionFactory.createContext(Session.AUTO_ACKNOWLEDGE)) {
-            Queue queue = context.createQueue("OrderQueue");
-            JMSConsumer consumer = context.createConsumer(queue);
-
+            JMSConsumer consumer = context.createConsumer(context.createQueue("OrderQueue"));
             Message message;
             while ((message = consumer.receiveNoWait()) != null) {
-                if (message instanceof TextMessage textMsg) {
-                    orderService.processOrder(textMsg.getText());
-                }
+                if (message instanceof TextMessage tm) orderService.processOrder(tm.getText());
             }
-        } catch (Exception e) {
-            // log error
-        }
+        } catch (Exception e) { /* log error */ }
     }
 }
 ```
 
-### Before/After: JMS Producer
+For a continuous blocking consumer instead of polling, submit a `consumeMessages()` loop to a single-thread `ExecutorService` from `void onStart(@Observes StartupEvent ev)`, using `consumer.receive()` (blocking) inside a `try (JMSContext ...)`.
+
+### JMS Producer
 
 ```java
-// BEFORE (JavaEE JMS Producer)
-import javax.ejb.Stateless;
-import javax.annotation.Resource;
-import javax.jms.*;
-
-@Stateless
-public class NotificationSender {
-
-    @Resource(lookup = "java:/jms/queue/NotificationQueue")
-    private Queue notificationQueue;
-
-    @Resource(lookup = "java:/ConnectionFactory")
-    private ConnectionFactory connectionFactory;
-
-    public void sendNotification(String orderId, String message) {
-        try (Connection conn = connectionFactory.createConnection();
-             Session session = conn.createSession(false, Session.AUTO_ACKNOWLEDGE)) {
-
-            MessageProducer producer = session.createProducer(notificationQueue);
-            TextMessage textMessage = session.createTextMessage();
-            textMessage.setText(message);
-            textMessage.setStringProperty("orderId", orderId);
-            producer.send(textMessage);
-        } catch (JMSException e) {
-            throw new RuntimeException("Failed to send notification", e);
-        }
-    }
-}
-```
-
-```java
-// AFTER (Quarkus — JMS API with injected ConnectionFactory)
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import jakarta.jms.*;
-
+// AFTER (Quarkus — injected ConnectionFactory)
 @ApplicationScoped
 public class NotificationSender {
-
-    @Inject
-    ConnectionFactory connectionFactory;
-
+    @Inject ConnectionFactory connectionFactory;
     public void sendNotification(String orderId, String message) {
         try (JMSContext context = connectionFactory.createContext(Session.AUTO_ACKNOWLEDGE)) {
-            Queue queue = context.createQueue("NotificationQueue");
-            context.createProducer()
-                .setProperty("orderId", orderId)
-                .send(queue, message);
+            context.createProducer().setProperty("orderId", orderId)
+                .send(context.createQueue("NotificationQueue"), message);
         }
     }
 }
@@ -234,8 +104,8 @@ public class NotificationSender {
 
 | JavaEE JNDI Lookup | Quarkus Equivalent |
 |---|---|
-| `@Resource(lookup="java:/jms/queue/OrderQueue")` | `context.createQueue("OrderQueue")` — use the destination name directly |
-| `@Resource(lookup="java:/jms/topic/Events")` | `context.createTopic("Events")` — use the topic name directly |
+| `@Resource(lookup="java:/jms/queue/OrderQueue")` | `context.createQueue("OrderQueue")` — name directly |
+| `@Resource(lookup="java:/jms/topic/Events")` | `context.createTopic("Events")` — name directly |
 | `@Resource(lookup="java:/ConnectionFactory")` | `@Inject ConnectionFactory` — auto-configured from `quarkus.artemis.*` |
 
 ---
@@ -245,54 +115,20 @@ public class NotificationSender {
 ### Dependencies
 
 ```xml
-<!-- For AMQP broker (Artemis, RabbitMQ with AMQP 1.0 plugin) -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-messaging-amqp</artifactId>
-</dependency>
-
-<!-- OR for Kafka -->
-<dependency>
-    <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-messaging-kafka</artifactId>
-</dependency>
+<!-- AMQP (Artemis, RabbitMQ w/ AMQP 1.0) -->
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-messaging-amqp</artifactId></dependency>
+<!-- OR Kafka -->
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-messaging-kafka</artifactId></dependency>
 ```
 
-### Before/After: @MessageDriven → @Incoming
+### @MessageDriven → @Incoming
+
+The BEFORE is the same MDB as Option A. The Quarkus form:
 
 ```java
-// BEFORE (JavaEE MDB)
-@MessageDriven(activationConfig = {
-    @ActivationConfigProperty(propertyName = "destinationType",
-        propertyValue = "javax.jms.Queue"),
-    @ActivationConfigProperty(propertyName = "destination",
-        propertyValue = "java:/jms/queue/OrderQueue")
-})
-public class OrderMessageHandler implements MessageListener {
-    @EJB
-    private OrderService orderService;
-
-    @Override
-    public void onMessage(Message message) {
-        try {
-            TextMessage textMsg = (TextMessage) message;
-            orderService.processOrder(textMsg.getText());
-        } catch (JMSException e) {
-            throw new RuntimeException(e);
-        }
-    }
-}
-
-// AFTER (Quarkus — SmallRye Reactive Messaging)
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import org.eclipse.microprofile.reactive.messaging.Incoming;
-
 @ApplicationScoped
 public class OrderMessageHandler {
-
-    @Inject
-    OrderService orderService;
+    @Inject OrderService orderService;
 
     @Incoming("orders-in")
     public void onMessage(String orderPayload) {
@@ -301,132 +137,70 @@ public class OrderMessageHandler {
 }
 ```
 
-### Before/After: JMS Send → @Outgoing or Emitter
+Remove `@MessageDriven`, `implements MessageListener`, and all `@ActivationConfigProperty`.
+
+### JMS Send → Emitter or @Outgoing
 
 **Pattern 1: Emitter (imperative send — most common for migration)**
 
 ```java
-// BEFORE (JavaEE JMS producer)
-@Stateless
-public class NotificationSender {
-    @Resource(lookup = "java:/jms/queue/NotificationQueue")
-    private Queue queue;
-
-    @Inject
-    private JMSContext jmsContext;
-
-    public void sendNotification(String orderId) {
-        jmsContext.createProducer().send(queue, orderId);
-    }
-}
-
-// AFTER (Quarkus — Emitter)
-import jakarta.enterprise.context.ApplicationScoped;
-import jakarta.inject.Inject;
-import org.eclipse.microprofile.reactive.messaging.Channel;
-import org.eclipse.microprofile.reactive.messaging.Emitter;
-
 @ApplicationScoped
 public class NotificationSender {
-
-    @Inject
-    @Channel("notifications-out")
-    Emitter<String> notificationEmitter;
-
-    public void sendNotification(String orderId) {
-        notificationEmitter.send(orderId);
-    }
+    @Inject @Channel("notifications-out") Emitter<String> notificationEmitter;
+    public void sendNotification(String orderId) { notificationEmitter.send(orderId); }
 }
 ```
 
 **Pattern 2: @Outgoing (reactive stream — for processing pipelines)**
 
 ```java
-// Reactive stream that transforms incoming messages and forwards them
 @ApplicationScoped
 public class OrderProcessor {
-
     @Incoming("orders-in")
     @Outgoing("processed-orders-out")
-    public String processOrder(String rawOrder) {
-        // transform and forward
-        return enrichOrder(rawOrder);
-    }
+    public String processOrder(String rawOrder) { return enrichOrder(rawOrder); }
 }
 ```
 
-### application.properties — Channel Configuration (AMQP)
+### Channel Configuration (AMQP)
 
 ```properties
-# Incoming channel: consumes from "OrderQueue" on Artemis
 mp.messaging.incoming.orders-in.connector=smallrye-amqp
 mp.messaging.incoming.orders-in.address=OrderQueue
 mp.messaging.incoming.orders-in.durable=true
 mp.messaging.incoming.orders-in.container-id=order-consumer
 
-# Outgoing channel: produces to "NotificationQueue"
 mp.messaging.outgoing.notifications-out.connector=smallrye-amqp
 mp.messaging.outgoing.notifications-out.address=NotificationQueue
 mp.messaging.outgoing.notifications-out.durable=true
 
-# AMQP broker connection
 amqp-host=localhost
 amqp-port=5672
 amqp-username=admin
-amqp-password=admin
+amqp-password=[REDACTED_PASSWORD]
 ```
 
-### application.properties — Channel Configuration (Kafka)
+### Channel Configuration (Kafka)
 
 ```properties
-# Incoming channel: consumes from "orders" topic
 mp.messaging.incoming.orders-in.connector=smallrye-kafka
 mp.messaging.incoming.orders-in.topic=orders
 mp.messaging.incoming.orders-in.group.id=order-service
 mp.messaging.incoming.orders-in.auto.offset.reset=earliest
 mp.messaging.incoming.orders-in.value.deserializer=org.apache.kafka.common.serialization.StringDeserializer
 
-# Outgoing channel: produces to "notifications" topic
 mp.messaging.outgoing.notifications-out.connector=smallrye-kafka
 mp.messaging.outgoing.notifications-out.topic=notifications
 mp.messaging.outgoing.notifications-out.value.serializer=org.apache.kafka.common.serialization.StringSerializer
 
-# Kafka broker connection
 kafka.bootstrap.servers=localhost:9092
 ```
 
-### Topic Consumer (Pub/Sub Pattern)
+### Topic Consumer (Pub/Sub)
 
-```java
-// BEFORE (JavaEE — Topic MDB)
-@MessageDriven(activationConfig = {
-    @ActivationConfigProperty(propertyName = "destinationType",
-        propertyValue = "javax.jms.Topic"),
-    @ActivationConfigProperty(propertyName = "destination",
-        propertyValue = "java:/jms/topic/OrderEvents"),
-    @ActivationConfigProperty(propertyName = "subscriptionDurability",
-        propertyValue = "Durable"),
-    @ActivationConfigProperty(propertyName = "subscriptionName",
-        propertyValue = "order-audit-sub")
-})
-public class OrderAuditListener implements MessageListener {
-    @Override
-    public void onMessage(Message message) { /* ... */ }
-}
-
-// AFTER (Quarkus — SmallRye Reactive Messaging)
-@ApplicationScoped
-public class OrderAuditListener {
-
-    @Incoming("order-events")
-    public void onOrderEvent(String event) {
-        // process event
-    }
-}
-```
+A durable Topic MDB migrates to `@Incoming("order-events")` with:
 
 ```properties
-# Topic subscription (AMQP)
 mp.messaging.incoming.order-events.connector=smallrye-amqp
 mp.messaging.incoming.order-events.address=OrderEvents
 mp.messaging.incoming.order-events.durable=true
@@ -436,34 +210,9 @@ mp.messaging.incoming.order-events.broadcast=true
 
 ### Structured Message Types (JSON Objects)
 
-```java
-// Consuming structured messages (auto-deserialization)
-@ApplicationScoped
-public class OrderMessageHandler {
-
-    @Incoming("orders-in")
-    public void onMessage(OrderEvent event) {
-        // SmallRye auto-deserializes JSON → OrderEvent
-        processOrder(event.getOrderId(), event.getAction());
-    }
-}
-
-// Producing structured messages
-@ApplicationScoped
-public class OrderPublisher {
-
-    @Inject
-    @Channel("order-events-out")
-    Emitter<OrderEvent> emitter;
-
-    public void publishOrderCreated(String orderId) {
-        emitter.send(new OrderEvent(orderId, "CREATED"));
-    }
-}
-```
+SmallRye auto-(de)serializes JSON to/from a POJO: `@Incoming("orders-in") public void onMessage(OrderEvent event)` and `Emitter<OrderEvent>`. Configure the object (de)serializer (Kafka):
 
 ```properties
-# JSON serialization config (Kafka)
 mp.messaging.incoming.orders-in.value.deserializer=io.quarkus.kafka.client.serialization.ObjectMapperDeserializer
 mp.messaging.outgoing.order-events-out.value.serializer=io.quarkus.kafka.client.serialization.ObjectMapperSerializer
 ```
@@ -474,84 +223,55 @@ mp.messaging.outgoing.order-events-out.value.serializer=io.quarkus.kafka.client.
 
 ### JMS Transacted Sessions → Acknowledgment Strategies
 
-| JavaEE JMS Transaction Mode | SmallRye Reactive Messaging Equivalent |
+| JavaEE JMS Transaction Mode | SmallRye Equivalent |
 |---|---|
-| `Session.AUTO_ACKNOWLEDGE` | Default — message acked after method returns successfully |
-| `Session.CLIENT_ACKNOWLEDGE` | Accept `Message<T>` parameter, call `message.ack()` manually |
-| `Session.SESSION_TRANSACTED` (local TX) | `@Acknowledgment(Strategy.POST_PROCESSING)` — ack after processing chain completes |
-| XA Transaction (JMS + DB) | **NOT SUPPORTED** in reactive messaging — use Option A (JMS API) |
+| `Session.AUTO_ACKNOWLEDGE` | Default — acked after method returns successfully |
+| `Session.CLIENT_ACKNOWLEDGE` | Accept `Message<T>`, call `message.ack()` manually |
+| `Session.SESSION_TRANSACTED` | `@Acknowledgment(Strategy.POST_PROCESSING)` — ack after chain completes |
+| XA (JMS + DB) | **NOT SUPPORTED** — use Option A (JMS API) |
 
 ### Acknowledgment Patterns
 
 ```java
-// Auto-acknowledge (default) — message acked when method returns without exception
+// Auto-acknowledge (default) — acked when method returns; NACKed (redelivered) on exception
 @Incoming("orders-in")
-public void onMessage(String payload) {
-    orderService.process(payload);
-    // auto-acked on success; NACKed (redelivered) on exception
-}
+public void onMessage(String payload) { orderService.process(payload); }
 
-// Manual acknowledge — for custom error handling
+// Manual acknowledge — custom error handling
 @Incoming("orders-in")
 public CompletionStage<Void> onMessage(Message<String> message) {
-    try {
-        orderService.process(message.getPayload());
-        return message.ack();  // explicit acknowledge
-    } catch (Exception e) {
-        return message.nack(e);  // negative acknowledge → dead-letter or redelivery
-    }
+    try { orderService.process(message.getPayload()); return message.ack(); }
+    catch (Exception e) { return message.nack(e); }  // → dead-letter or redelivery
 }
 
-// Post-processing acknowledgment — ack after entire chain completes
-@Incoming("orders-in")
-@Outgoing("processed-out")
+// Post-processing — ack only after downstream @Outgoing confirms
+@Incoming("orders-in") @Outgoing("processed-out")
 @Acknowledgment(Acknowledgment.Strategy.POST_PROCESSING)
-public String processAndForward(String payload) {
-    // ack only when downstream (@Outgoing) confirms receipt
-    return transform(payload);
-}
+public String processAndForward(String payload) { return transform(payload); }
 ```
 
 ### XA Transactions (JMS + Database)
 
-**Problem**: In JavaEE, MDBs can participate in XA transactions — the JMS message consumption and database write happen in the same distributed transaction. If the DB write fails, the message is not consumed.
+In JavaEE, MDBs can participate in XA transactions (message consumption + DB write in one distributed TX). SmallRye Reactive Messaging does NOT support XA. Solutions:
 
-**Quarkus limitation**: SmallRye Reactive Messaging does NOT support XA/distributed transactions.
-
-**Solutions**:
-1. **Option A (JMS API)** — use `quarkus-artemis-jms` with `UserTransaction` for JMS-local transactions
-2. **Idempotent consumer pattern** — process messages idempotently, accept at-least-once delivery:
+1. **Option A (JMS API)** — `quarkus-artemis-jms` with `UserTransaction` for JMS-local transactions.
+2. **Idempotent consumer** — accept at-least-once delivery, process idempotently:
 ```java
-@ApplicationScoped
-public class OrderMessageHandler {
-
-    @Inject
-    OrderService orderService;
-
-    @Incoming("orders-in")
-    @Transactional
-    public void onMessage(String orderId) {
-        // Idempotent: check if already processed
-        if (!orderService.isProcessed(orderId)) {
-            orderService.processOrder(orderId);
-        }
-        // Message acked automatically after successful return
-    }
+@Incoming("orders-in")
+@Transactional
+public void onMessage(String orderId) {
+    if (!orderService.isProcessed(orderId)) orderService.processOrder(orderId);
 }
 ```
-3. **Outbox pattern** — write to DB + outbox table in single TX, relay outbox to broker separately
+3. **Outbox pattern** — write to DB + outbox table in one TX, relay outbox to broker separately.
 
-### Dead-Letter Queue Configuration
+### Dead-Letter Queue
 
 ```properties
-# AMQP — dead-letter on failure
+# AMQP
 mp.messaging.incoming.orders-in.failure-strategy=dead-letter-queue
 mp.messaging.incoming.orders-in.dead-letter-queue.queue=orders-dlq
-
-# Kafka — dead-letter topic
-mp.messaging.incoming.orders-in.failure-strategy=dead-letter-queue
-mp.messaging.incoming.orders-in.dead-letter-queue.topic=orders-dlq
-mp.messaging.incoming.orders-in.dead-letter-queue.value.serializer=org.apache.kafka.common.serialization.StringSerializer
+# Kafka: .failure-strategy=dead-letter-queue + .dead-letter-queue.topic=orders-dlq
 ```
 
 ---
@@ -560,43 +280,73 @@ mp.messaging.incoming.orders-in.dead-letter-queue.value.serializer=org.apache.ka
 
 | Step | Action |
 |---|---|
-| 1 | Identify all `@MessageDriven` classes and their activation config |
-| 2 | Choose Option A or B per MDB (use decision tree above) |
+| 1 | Identify all `@MessageDriven` classes + activation config |
+| 2 | Choose Option A or B per MDB (decision tree) |
 | 3 | Map JNDI destination names to direct queue/topic names |
 | 4 | Remove `@MessageDriven`, `implements MessageListener`, `@ActivationConfigProperty` |
-| 5 | Add `@ApplicationScoped` + `@Incoming("channel")` (Option B) or JMS consumer (Option A) |
-| 6 | Map JMS producers to `Emitter<T>` (Option B) or injected `ConnectionFactory` (Option A) |
-| 7 | Configure channels in `application.properties` |
-| 8 | Verify: `./mvnw clean compile` passes |
-| 9 | Test: send a message to the queue/topic, verify consumer processes it |
+| 5 | Add `@ApplicationScoped` + `@Incoming` (B) or JMS consumer (A) |
+| 6 | Map producers to `Emitter<T>` (B) or injected `ConnectionFactory` (A) |
+| 7 | Configure channels in `application.properties` (+ `%test` in-memory — see below) |
+| 8 | Verify `./mvnw clean compile` passes |
+| 9 | Test: send a message, verify consumer processes it |
 
-## Testing Messaging
+## Test Profile Configuration (In-Memory Connector)
+
+For every `mp.messaging` channel, add a `%test` override using the in-memory connector. **MANDATORY** when no AMQP/Kafka broker is available in tests — otherwise `@QuarkusTest` startup fails with connection-refused to localhost:5672/9092.
+
+```xml
+<dependency><groupId>io.smallrye.reactive</groupId>
+  <artifactId>smallrye-reactive-messaging-in-memory</artifactId><scope>test</scope></dependency>
+```
+
+```properties
+# Override EVERY channel for tests
+%test.mp.messaging.incoming.orders-in.connector=smallrye-in-memory
+%test.mp.messaging.outgoing.notifications-out.connector=smallrye-in-memory
+%test.mp.messaging.incoming.order-events.connector=smallrye-in-memory
+```
+
+**Rule**: for each `mp.messaging.incoming/outgoing.<channel>`, add `%test.mp.messaging.<direction>.<channel>.connector=smallrye-in-memory`.
+
+Source: [SmallRye Reactive Messaging Testing Guide](https://smallrye.io/smallrye-reactive-messaging/4.24.0/concepts/testing/)
+
+### Test Example
 
 ```java
-// Test with InMemory connector (no broker needed)
 @QuarkusTest
 public class OrderMessageHandlerTest {
-
-    @Inject
-    @Channel("orders-in")
-    Emitter<String> testEmitter;
-
-    @Inject
-    InMemoryConnector connector;
+    @Inject @Channel("orders-in") Emitter<String> testEmitter;
+    @Inject InMemoryConnector connector;
 
     @Test
     public void testMessageProcessing() {
-        // Send test message
         testEmitter.send("test-order-123");
-
-        // Verify processing (check database, mock, etc.)
-        // ...
+        // verify processing (database, mock, etc.)
     }
 }
 ```
 
-```properties
-# Test profile — use in-memory connector (no real broker)
-%test.mp.messaging.incoming.orders-in.connector=smallrye-in-memory
-%test.mp.messaging.outgoing.notifications-out.connector=smallrye-in-memory
+---
+
+## Message Properties / Headers Warning
+
+`Emitter<String>` carries only the payload. JMS properties set via `setStringProperty()`/`getStringProperty()` have **no automatic equivalent** in SmallRye. Options:
+
+1. **Encode in JSON payload** — include former header fields as JSON properties.
+2. **Use `Message<T>` with OutgoingAmqpMetadata** (AMQP only):
+```java
+emitter.send(Message.of(payload)
+    .addMetadata(OutgoingAmqpMetadata.builder()
+        .withApplicationProperties(Map.of("orderId", orderId)).build()));
 ```
+
+**Migration action**: at every `setStringProperty()`/`getStringProperty()` call site, add a `// MIGRATION: JMS property — encoded in payload` comment and choose option (1) or (2).
+
+## Durable Subscription Mapping
+
+| JMS ActivationConfig Property | SmallRye AMQP Config |
+|---|---|
+| `subscriptionDurability=Durable` | `mp.messaging.incoming.<channel>.durable=true` |
+| `subscriptionName=my-sub` | `mp.messaging.incoming.<channel>.container-id=my-sub` |
+| `clientId=my-client` | `.client-id=my-client` (Kafka: `group.id`) |
+| `messageSelector="type='ORDER'"` | Not supported — use Option A (JMS API) or filter in code |

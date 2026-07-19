@@ -21,6 +21,26 @@
 | myfaces-quarkus | 4.0.2 | JSF preservation |
 | quarkus-kafka | Any 3.33.x | SmallRye Kafka integration |
 
+## Artifact Renames (Quarkus 3.9+)
+
+The following artifacts were renamed in Quarkus 3.9. Both old and new names work (via Maven relocation), but new migrations should use the new names:
+
+| Old Artifact ID | New Artifact ID (3.9+) | Notes |
+|---|---|---|
+| `quarkus-resteasy-reactive` | `quarkus-rest` | RESTEasy Reactive |
+| `quarkus-smallrye-reactive-messaging-amqp` | `quarkus-messaging-amqp` | SmallRye AMQP |
+| `quarkus-smallrye-reactive-messaging-kafka` | `quarkus-messaging-kafka` | SmallRye Kafka |
+| `quarkus-rest-client-reactive-jackson` | `quarkus-rest-client-reactive` | REST Client |
+
+## Artifact Renames (Quarkus 3.31+)
+
+| Old Artifact ID | New Artifact ID (3.31+) | Notes |
+|---|---|---|
+| `quarkus-junit5` | `quarkus-junit` | Test framework; old ID produces harmless relocation warning |
+| `quarkus-junit5-mockito` | `quarkus-junit-mockito` | Mockito integration |
+
+For Quarkus 3.31+, using `quarkus-junit5` still works but produces a Maven relocation warning. Use `quarkus-junit` to suppress the warning. Both produce identical functionality.
+
 ## Database Compatibility
 
 | Database | JDBC Driver | Quarkus Extension | Notes |
@@ -30,6 +50,7 @@
 | H2 | 2.x | quarkus-jdbc-h2 | Development only |
 | Oracle | 21c+ | quarkus-jdbc-oracle | Enterprise |
 | DB2 | 11.5+ | quarkus-jdbc-db2 | IBM environments |
+| SQL Server | 2019+ | quarkus-jdbc-mssql | Microsoft environments |
 
 ## Container Platform Support
 
