@@ -10,144 +10,138 @@
 | JMS/REST blocking issues | Check REST endpoints calling JMS | Add `@Blocking` annotation |
 | JSF navigation broken | `grep -rn 'jakarta\.face\.' src/` | Fix typos: `jakarta.face` → `jakarta.faces` |
 | Security annotations ignored | Missing quarkus-security extension | Add `quarkus-elytron-security-properties-file` |
-| Tests not found | Check test class naming | Rename `*Test.java` or configure surefire |
+| Tests not found | Check test class naming | Rename `*IT.java` → `*Test.java` |
 | Native build failures | Missing reflection config | Add `@RegisterForReflection` |
-| import.sql table errors | Table name mismatch | Set `quarkus.hibernate-orm.physical-naming-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl` |
+| import.sql table errors | Table name mismatch | Set physical-naming-strategy |
 | @ConversationScoped failure | ArC doesn't support it | Use `@SessionScoped` + `implements Serializable` |
-| UnnecessaryStubbingException | MockitoExtension strict mode | Remove unreachable stubs — see arquillian-to-quarkustest.md Section 9 |
+| UnnecessaryStubbingException | MockitoExtension strict mode | Remove unreachable stubs or use `lenient()` — see arquillian-to-quarkustest.md Section 9 |
 | TransactionRequiredException on read | @Transactional missing | Apply class-level @Transactional (not just write methods) |
-| Uni<T> NPE in tests | Mockito default returns null for Uni | Stub with `Uni.createFrom().item(...)` — see below |
-| quarkus-junit5 relocation warning | Quarkus 3.31+ renamed artifact | Use `quarkus-junit` to suppress warning — see below |
-| @ConfigProperty null in unit test | No CDI container in plain unit test | Use reflective injection or convert to @QuarkusTest — see arquillian-to-quarkustest.md Section 11 |
-| Gradle + mvn BUILD COMMAND mismatch | `ls pom.xml` absent + `ls build.gradle` present | Do NOT create pom.xml — verify via `./gradlew build` or static inspection. See below |
-| `find` exit code false positive | `find ... -delete` always exits 0 | Use `find ... -print` first, then `find ... -delete`; verify with re-run of print |
+| Uni<T> NPE in tests | Mockito default returns null for Uni | Stub with `Uni.createFrom().item(...)` |
+| quarkus-junit5 relocation warning | Quarkus 3.31+ renamed artifact | Use `quarkus-junit` (renamed from quarkus-junit5) |
+| @ConfigProperty null in unit test | No CDI container in plain unit test | Use reflective injection or convert to @QuarkusTest |
+| Gradle + mvn BUILD COMMAND mismatch | `ls pom.xml` absent + `ls build.gradle` present | Do NOT create pom.xml — use `./gradlew build` |
+| `find` exit code false positive | `find ... -delete` always exits 0 | Use `find ... -print` first, verify, then delete |
+| Missing `gradlew` script | `ls gradlew` absent | Run `gradle wrapper --gradle-version=8.10` — see below |
+| Micrometer MeterRegistry NPE in tests | @Mock MeterRegistry → concrete methods unmocked | Use `new SimpleMeterRegistry()` |
+| `find` with `-o` matches unexpected files | Operator precedence | Parenthesize: `\( -name '*.bak' -o -name '*.orig' \)` |
+| Mockito 5 / JDK 17+ IllegalAccessError | Dynamic agent loading disabled | Add surefire argLine — see below |
+| .bak files left after grep-edit | Worker edit left backup | Run full sweep — see below |
+| 415 Unsupported Media Type | Missing JSON serialization extension | Add `quarkus-rest-jackson` — see below |
+| REST base path silently wrong | Wrong property key for extension | Check extension: `quarkus-rest` → `quarkus.rest.path`; `quarkus-resteasy` → `quarkus.resteasy.path` |
+| Hibernate dialect version-mismatch error | Explicit dialect set alongside db-kind | Remove `quarkus.hibernate-orm.dialect` — auto-detects from db-kind |
+
+## 415 Unsupported Media Type — Missing quarkus-rest-jackson
+
+**Problem**: REST endpoints returning complex types (non-String, non-Response, non-primitive) silently produce 415 or empty responses without a JSON serialization extension.
+
+**Detection**: Any `@Path` endpoint with return type that is a POJO/DTO/List<T>/Map:
+```bash
+grep -rn '@GET\|@POST\|@PUT' src/main/java/ | head -20
+# Check return types — if non-String/Response → need jackson
+```
+
+**Fix**: Add to pom.xml:
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-rest-jackson</artifactId>
+</dependency>
+```
+
+**LRA companion requirement**: `quarkus-narayana-lra` ALWAYS requires both `quarkus-rest-jackson` AND `quarkus-rest-client` as mandatory companions.
+
+## quarkus.rest.path Silent Failure
+
+**Problem**: Using `quarkus.rest.path` when the project uses `quarkus-resteasy` (Classic), or vice versa, silently has no effect — base path reverts to `/` without error.
+
+**Diagnostic**: Check which extension is in pom.xml:
+```bash
+grep -n 'quarkus-rest\b\|quarkus-resteasy\b' pom.xml
+```
+
+**Rule**: `quarkus-rest` → `quarkus.rest.path`; `quarkus-resteasy` → `quarkus.resteasy.path`.
+
+## Hibernate Dialect Auto-Detection
+
+**Problem**: Setting explicit `quarkus.hibernate-orm.dialect` when `quarkus.datasource.db-kind` is already configured causes version-mismatch validation errors in Hibernate ORM 6.
+
+**Fix**: Remove the `quarkus.hibernate-orm.dialect` line entirely. Hibernate ORM 6 auto-detects from `db-kind`. The only case where explicit dialect is needed: test override when main config sets an explicit dialect.
+
+## Surefire argLine for Mockito 5 / JDK 17+
+
+**Fix**: Add to pom.xml `maven-surefire-plugin` configuration:
+```xml
+<plugin>
+    <artifactId>maven-surefire-plugin</artifactId>
+    <configuration>
+        <argLine>@{argLine} -XX:+EnableDynamicAgentLoading</argLine>
+    </configuration>
+</plugin>
+```
+
+## .bak/.orig File Cleanup
+
+**Fix**: After any batch edit operation, proactively delete backup files:
+```bash
+# Preview what will be deleted
+find . -not -path './target/*' -not -path './build/*' \( -name '*.bak' -o -name '*.orig' \) -print
+
+# Delete
+find . -not -path './target/*' -not -path './build/*' \( -name '*.bak' -o -name '*.orig' \) -delete
+
+# Verify empty
+find . -not -path './target/*' -not -path './build/*' \( -name '*.bak' -o -name '*.orig' \) -print
+```
+
+**Best practice**: Run this cleanup after EVERY batch of file modifications, not just at the end of migration. Scope includes root-level files (pom.xml.bak, build.gradle.bak).
 
 ## JNDI Lookup Resolution Patterns
 
 ### Pattern 1: Static Config Lookups → @ConfigProperty
-
-For JNDI lookups that retrieve configuration values (datasource URLs, hostnames, feature flags):
-
 ```java
-// BEFORE
-@Resource(lookup = "java:comp/env/config/emailHost")
-private String emailHost;
+// BEFORE: @Resource(lookup = "java:comp/env/config/emailHost")
+// AFTER: @ConfigProperty(name = "app.email.host") String emailHost;
+```
+**Key**: JNDI path ≠ @ConfigProperty key. Grep source for actual key names.
 
-// or programmatic:
-InitialContext ctx = new InitialContext();
-String emailHost = (String) ctx.lookup("java:comp/env/config/emailHost");
-
-// AFTER
-@ConfigProperty(name = "app.email.host")
-String emailHost;
+### Pattern 2: Managed Resource JNDI Lookups → @Inject CDI Bean
+```java
+// BEFORE: InitialContext ctx = new InitialContext(); DataSource ds = (DataSource) ctx.lookup(...)
+// AFTER: @Inject DataSource ds;
 ```
 
-**Key**: the JNDI path (e.g. `config/emailHost`) does NOT equal the `@ConfigProperty` key. Grep source for `@ConfigProperty(name=...)` usages to discover actual key names used in code, then map the JNDI values to those keys in `application.properties`.
-
-### Pattern 2: Unmigratable Dynamic JNDI Lookups → UnsupportedOperationException
-
-For JNDI lookup methods that perform dynamic lookups (variable lookup paths, complex service resolution) where static replacement is not feasible:
-
-```java
-// BEFORE
-public Object lookupService(String jndiName) {
-    InitialContext ctx = new InitialContext();
-    return ctx.lookup(jndiName);
-}
-
-// AFTER — replace body with UnsupportedOperationException
-public Object lookupService(String jndiName) {
-    throw new UnsupportedOperationException(
-        "JNDI lookups not supported in Quarkus. Use @ConfigProperty or @Inject instead. "
-        + "Attempted lookup: " + jndiName);
-}
-```
-
-**Why UnsupportedOperationException**: it extends `RuntimeException`, which preserves existing `@Test(expected = RuntimeException.class)` test contracts. Tests that previously caught exceptions from JNDI failures continue to pass. The method signature (including checked exceptions) remains unchanged.
-
-**When to use**: Only when the JNDI lookup cannot be replaced with a static `@ConfigProperty` or `@Inject`. This is a compile-and-test-passing placeholder that clearly communicates the limitation.
+### Pattern 3: Unmigratable Dynamic JNDI → UnsupportedOperationException
+Only when static replacement is not feasible.
 
 ## Uni<T> Null Mock Pitfall
 
-**Problem**: Mockito's default return value for `Uni<T>` is `null`. Calling `.subscribe().with()` or `.await().indefinitely()` on `null` throws `NullPointerException`.
-
-**Symptom**: NPE in test code at a line like `service.someMethod().await().indefinitely()` where `someMethod()` returns `Uni<T>` and is mocked but not stubbed.
-
 **Fix**: Always stub `Uni`-returning methods explicitly:
 ```java
-// For Uni<SomeObject>
 when(service.findItem(any())).thenReturn(Uni.createFrom().item(new Item("test")));
-
-// For Uni<Void>
 when(service.deleteItem(any())).thenReturn(Uni.createFrom().voidItem());
-
-// For Uni that should fail
-when(service.findItem(any())).thenReturn(Uni.createFrom().failure(new NotFoundException()));
 ```
 
-**When this occurs**: After converting `@Asynchronous` EJB methods from `Future<T>` to `Uni<T>`, any test that mocks those methods must be updated to stub the Uni return value.
+## quarkus-junit Artifact (Quarkus 3.31+)
 
-## quarkus-junit5 Artifact Relocation (Quarkus 3.31+)
-
-In Quarkus 3.31+, `quarkus-junit5` was relocated to `quarkus-junit`. Both artifact IDs work, but using `quarkus-junit5` produces a harmless Maven relocation warning in the build output:
-
-```
-[WARNING] The artifact io.quarkus:quarkus-junit5 has been relocated to io.quarkus:quarkus-junit
-```
-
-**Fix**: For new migrations targeting Quarkus 3.31+, use `quarkus-junit` directly. For existing projects, this warning is cosmetic and does not affect functionality.
+In Quarkus 3.31+, `quarkus-junit5` was renamed to `quarkus-junit` (Maven relocation in place). Use `quarkus-junit` directly to suppress the relocation warning. Source: [Quarkus 3.31 release blog](https://quarkus.io/blog/quarkus-3-31-released/).
 
 ## Test Preservation — Never Delete Surviving Tests
 Rule: a test may only be deleted if its **target class no longer exists** after migration.
-If a test mocks a removed JCA/EJB interface but the implementation survives as a CDI bean,
-**rewrite the mock against the CDI type** — do not delete the test.
 - Check: `grep -rc '@Test' src/test` before vs. after — any drop must map to a removed target class.
 
 ## Incomplete Namespace Migration — javax-pinned Binary Dependency
-Symptom: after migration, `grep -rc 'javax\.' src/` still returns many hits because a binary dependency with no `jakarta.*` release forces `javax.*`.
-Fix priority — (b) is MANDATORY before halting; a javax-pinned binary is NOT sufficient reason to halt:
-
-**(a) Replacement** — check for a jakarta-based release or newer major version of the library first.
-
-**(b) Eclipse Transformer (resolves the majority of cases)** — rewrite
-`javax.*`->`jakarta.*` in the offending artifact at build time. Maven plugin approach:
-```xml
-<plugin>
-  <groupId>org.eclipse.transformer</groupId>
-  <artifactId>transformer-maven-plugin</artifactId>
-  <version>0.5.0</version>
-  <executions>
-    <execution>
-      <id>jakarta-transform</id>
-      <phase>generate-sources</phase>
-      <goals><goal>run</goal></goals>
-      <configuration>
-        <rules><jakartaDefaults>true</jakartaDefaults></rules>
-        <artifact>
-          <groupId>org.rapla</groupId><artifactId>restinject</artifactId><version>PINNED</version>
-        </artifact>
-      </configuration>
-    </execution>
-  </executions>
-</plugin>
-```
-Then depend on the transformed artifact (classifier `jakarta`) instead of the original. Verify with
-`grep -rc 'javax\.' src/` (source) AND confirm the transformed jar no longer exposes `javax.*` on the
-compile classpath. CLI alternative: `java -jar org.eclipse.transformer.cli.jar restinject.jar restinject-jakarta.jar`.
-
-**(c) HALT** — ONLY if (a) has no jakarta release AND (b) fails (e.g. reflection-heavy artifact the
-Transformer cannot rewrite). Then emit `BLOCKERS.md` documenting both attempts.
-
-Never ship a partially-migrated namespace (mixed javax/jakarta) — but note: a clean Phase-0 halt on an
-app that WAS migratable via the Transformer is also a failure. Exhaust (b) first.
+Fix priority — (b) is MANDATORY before halting:
+**(a) Replacement** — check for jakarta-based release.
+**(b) Eclipse Transformer** — rewrite javax→jakarta in the offending artifact at build time.
+**(c) HALT** — ONLY if (a) and (b) fail.
 
 ## Multi-module EAR Test Consolidation
-Tests in `ear/ejb-tests` submodules must be moved to the consolidated module's `src/test/java/` or they are silently dropped during EAR→single-module consolidation. Always verify test count post-migration matches pre-migration count.
+Tests in `ear/ejb-tests` submodules must be moved to the consolidated module's `src/test/java/`.
 
 ## Common Migration Pitfalls
 
 ### Bean Management Issues
-- **Bean removed by unused-bean optimization** → Set `quarkus.arc.remove-unused-beans=false` during migration
+- **Bean removed by unused-bean optimization** → Set `quarkus.arc.remove-unused-beans=false`
 - **Final class cannot be proxied** → Add `quarkus.arc.transform-unproxyable-classes=true`
 - **Missing no-arg constructor** → Normal-scoped beans need no-arg constructor for ArC proxies
 
@@ -158,46 +152,64 @@ Tests in `ear/ejb-tests` submodules must be moved to the consolidated module's `
 ### Migration Mistakes
 - **Incomplete namespace migration** → Mixed `javax.*`/`jakarta.*` causes compilation errors
 - **JNDI lookups remain** → `InitialContext` fails at Quarkus runtime
-- **@ConversationScoped loss** → ArC fallback to `@SessionScoped` may cause state-leak across browser tabs
+- **@Remove → @PreDestroy (WRONG)** → Simply remove the @Remove annotation
 - **import.sql failures** → Verify table names match `@Table(name=...)` annotations
-- **@Remove → @PreDestroy (WRONG)** → Simply remove the @Remove annotation; do not convert to @PreDestroy
 
 ### Quick Fixes
 - **ArC bean discovery**: Use `-Dquarkus.arc.unremovable-types` to debug missing beans
-- **Schema issues**: Set `quarkus.hibernate-orm.database.generation=drop-and-create` for dev
+- **Schema issues**: Set `quarkus.hibernate-orm.schema-management.strategy=drop-and-create` for dev
 - **JMS blocking**: Always add `@Blocking` to REST endpoints that call JMS/messaging
 
 ## Gradle Project + Maven BUILD COMMAND Mismatch
 
-**Symptom**: `mvn clean test` fails with "no POM" or "Could not find pom.xml" on a Gradle-only project.
+**Resolution**: NEVER create a `pom.xml` for a Gradle-only project. Use `./gradlew build` or static verification.
 
-**Diagnostic**:
-```bash
-ls pom.xml    # absent
-ls build.gradle  # present (or build.gradle.kts)
+## Missing Gradle Wrapper (gradlew)
+
+**Resolution:** Run `gradle wrapper --gradle-version=8.10` using system Gradle. Do NOT use curl/wget.
+
+## Micrometer MeterRegistry — Never @Mock
+
+**Fix**: Replace `@Mock MeterRegistry` with `new SimpleMeterRegistry()` in all unit tests.
+
+## Version Lookups — Never curl/wget
+
+The target version is `3.33.2` (LTS). Never invoke `curl`, `wget`, or any HTTP client — the denylist fires on the command name regardless of arguments and hard-terminates the pipeline.
+
+## Cross-Task Field Rename — setField() String Staleness
+
+After renaming `@Inject` fields, update string literals in `ReflectionTestUtils.setField(service, "oldName", mock)`.
+
+## Comment False-Positives in Validation Greps
+
+MIGRATION comments quoting literal annotation names (`@EJB`, `@Stateless`) cause false-positive failures. Rewrite comments to use prose descriptions.
+
+## H2 Test Override Dialect Interaction
+
+**Problem**: Main config sets explicit dialect. Test sets `db-kind=h2` without overriding dialect. Result: SQL syntax errors.
+
+**Fix**: When main config has explicit dialect, test override MUST set BOTH:
+```properties
+%test.quarkus.datasource.db-kind=h2
+%test.quarkus.hibernate-orm.dialect=org.hibernate.dialect.H2Dialect
 ```
 
-**Resolution:**
-1. **NEVER create a `pom.xml`** — this introduces a parallel build system that conflicts with the correct Gradle build and is always wrong.
-2. Attempt `./gradlew build` or `./gradlew test` if a Gradle wrapper is available.
-3. If Gradle wrapper is unavailable or version mismatch prevents execution, use **static verification**: grep scans for `javax.*` imports, EJB annotations, missing `application.properties`.
-4. Report the environment mismatch in the output — do NOT treat as a migration failure.
-5. **Debugger constraint**: the debugger role must also follow this constraint. Never create `pom.xml` to fix a Gradle project's `mvn` failure.
+## Inline Fully-Qualified Annotations (@javax.X.Y)
 
-## find Exit-Code Idiom
+**Detection**: `grep -rn '\bjavax\.' src/ | grep -v 'javax\.sql\|javax\.crypto\|javax\.security\.auth\|javax\.net\|javax\.naming' | grep -v '^\s*//' | grep -v '^\s*\*'`
+**Fix**: Replace each `@javax.X.Y` with `@jakarta.X.Y`. Also catches non-annotation type references (field declarations, catch clauses, casts).
 
-**Problem**: `find ... -delete` always exits 0 even if no files match. This makes it unreliable for verifying file removal.
+## javax.annotation.security Namespace Migration
 
-**Correct pattern:**
-```bash
-# Step 1: Preview what will be deleted
-find src/main/webapp -name '*.xhtml' -print
+`javax.annotation.security.RolesAllowed` must migrate to `jakarta.annotation.security.RolesAllowed`. Easy to miss because @RolesAllowed "works unchanged" semantically — but the import still changes.
 
-# Step 2: Delete only if Step 1 showed results
-find src/main/webapp -name '*.xhtml' -delete
+## Gradle-Specific Pitfalls
 
-# Step 3: Verify deletion succeeded
-find src/main/webapp -name '*.xhtml' -print  # must return empty
-```
+### testcontainers scope
+In Gradle, `testImplementation` is the correct scope for testcontainers dependencies. Do NOT use `implementation` — testcontainers should not be in the production classpath.
 
-Do NOT rely on the exit code of `find ... -delete` to determine if files were present or successfully removed.
+### enforcedPlatform dual-scope
+When using `enforcedPlatform("io.quarkus.platform:quarkus-bom:...")`, it must appear in BOTH `implementation` and `testImplementation` configurations, or use a top-level `dependencies { constraints { ... } }` block. Missing from test scope causes version conflicts for test-only dependencies.
+
+### Deprecated sourceCompatibility
+Use `java { sourceCompatibility = JavaVersion.VERSION_17 }` in `build.gradle`. The older `sourceCompatibility = '17'` string form may cause Quarkus plugin validation warnings.

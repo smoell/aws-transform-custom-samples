@@ -1,142 +1,149 @@
-# CHANGELOG — JavaEE to Quarkus Skill v1.6.1 (manual condensation)
+# CHANGELOG — javaee-to-quarkus v2.4 (manual condensation of v2.3)
 
-## Iteration (2026-07) — Manual Condensation + Grep Hardening
+## Iteration (2026-07) — Manual Condensation
 
-Post-processing of the v1.6 auto-evolved spec (session 00e85250, iter 3). NOT an
-automated TransForge iteration — a manual maintenance pass by the spec owner.
+Post-processing of the v2.3 auto-evolved spec (session 00e85250, iter 10). NOT an automated
+TransForge iteration — a manual maintenance pass by the spec owner.
 
-### Size Reduction (moderate condensation)
-- Total spec: 231.7 KB -> 198.2 KB (-14.5%). Still above the 150 KB monitoring
-  threshold; further reduction would require removing reviewer-preserved content.
-- Condensed the 4 largest reference files by ~30% each, preserving ALL named
-  patterns/sections — only merged redundant before/after code blocks and trimmed
-  verbose prose:
-  - arquillian-to-quarkustest.md  29.9 KB -> 21.2 KB (all 11 sections + both Quick Ref tables kept)
-  - ejb-to-cdi-mapping.md         28.8 KB -> 18.7 KB (merged duplicate TransactionAttribute tables; all 6 examples kept)
-  - jms-to-smallrye.md            22.3 KB -> 13.7 KB (merged duplicate MDB before/after; decision tree + all config kept)
-  - jpa-to-quarkus-persistence.md 21.1 KB -> 13.4 KB (condensed persistence.xml example; all tables + Panache/Envers/Search kept)
+### Size Reduction
+- Total: 247.9 KB -> 191.2 KB (-22.9%). Approaches the 150 KB monitoring threshold without
+  removing any reviewer-preserved technical content.
+- Condensed 5 large files + SKILL.md (all named patterns/sections/rules preserved; only merged
+  duplicate before/after blocks, collapsed near-identical tables, trimmed verbose prose):
+  - SKILL.md                       37.2 KB -> 26.9 KB  (deduped .bak sweep, merged grep blocks)
+  - references/arc-limitations.md  19.2 KB ->  7.4 KB  (tightened per-item prose; all patterns + full config table kept)
+  - references/arquillian-*.md     28.3 KB -> 19.9 KB  (all 25 sections + both quick-ref tables kept)
+  - references/jpa-*.md            25.1 KB -> 12.8 KB  (merged duplicate pool/PU-resolution/dialect blocks; Property Conflict Resolution + Dialect Rules kept)
+  - references/phases-detail.md    20.8 KB -> 13.9 KB  (deduped .bak sweep 3x, Gradle setup 2x, descriptor list 2x)
+  - references/jms-to-smallrye.md  22.3 KB -> 13.7 KB  (merged duplicate MDB before/after)
 
-### Correctness Fixes (from spec review)
-- **Hardened comment-blind greps** (functional bug): EJB-annotation and JNDI exit-criteria
-  / validation greps now exclude comment lines (`| grep -v '^[[:space:]]*\(//\|\*\)'`).
-  Migration `MIGRATION:`/Javadoc comment lines previously produced false positives — this
-  was observed in the iter-1 validator, which had to filter 6 `@EJB`/`@Stateless` and 3
-  `InitialContext` comment-line hits by hand.
-- **Unified javax.* scan scope** to `src/main/java/ src/test/java/` in the Validation
-  Commands block (was `src/`), matching the Exit Criteria scope.
+### Correctness
+- Retained v2.3's CORRECT colon-aware grep filters (`| grep -v '^[^:]*:[0-9]*:\s*//' | grep -v '^[^:]*:[0-9]*:\s*\*'`)
+  everywhere — these account for grep -rn's `file:lineno:` prefix. (Supersedes the broken
+  `^[[:space:]]*` filter briefly shipped as manual v1.6.1.)
+- All v2.3 auto-evolved improvements (JPA property-conflict rules, batch @Transactional placement,
+  strict-stubbing decision table, H2 test profile, Gradle companion steps, Javadoc cleanup) preserved.
 
 ### Preserved
-No named patterns, sections, or reference files removed. All 14 reference files carried
-forward; 10 unchanged, 4 condensed, SKILL.md grep-hardened.
+No named patterns, sections, rules, or reference files removed. All 18 reference files carried
+forward (13 unchanged from iter 10, 5 condensed) + SKILL.md condensed.
 
 ---
 
-# CHANGELOG — JavaEE to Quarkus Skill v1.6
+# CHANGELOG — javaee-to-quarkus v2.3
 
 ## Summary
 
-This iteration fixes the only project failure (gradle-ejb-jpa-concurrency-wildfly) caused by
-curl/wget sandbox prohibition and Gradle+Maven BUILD COMMAND mismatch. It also enriches reference
-files from 4 successful projects (80% success rate) with patterns validated across 3+ projects.
+This is a REFINE iteration fixing 3 spec bugs (grep filter, assertion wording, strict-stubbing gaps),
+adding 1 proactive step (Javadoc cleanup), and addressing judge recommendations. All 24 projects
+pass (100% success rate, no regressions). Changes are surgical — spec stays at 381 lines (was 379).
 
-## Changes to SKILL.md
+## Changes in SKILL.md
 
-- **ADDED**: "Shell Safety Constraints" section — curl/wget prohibition causing hard pipeline abort.
-  Driven by: gradle-ejb-jpa-concurrency-wildfly failure.
-- **ADDED**: Phase 0 "Complete ALL blocker scans before HALT" note — prevents incomplete BLOCKERS.md.
-  Driven by: phase0-blocker-remote-ejb.
-- **MODIFIED**: Phase 1 Build tool bullet — explicit Gradle-only project handling ("do NOT create pom.xml").
-  Driven by: gradle-ejb-jpa-concurrency-wildfly.
-- **MODIFIED**: Quick Reference "Application class removal" pattern — conditional on NON-ROOT path only.
-  Resolves internal contradiction between Quick Reference and Phase 2 checklist.
-  Driven by: simple-ejb-jpa-wildfly-war.
-- **MODIFIED**: Phase 3 — added messaging validation grep (`@MessageDriven|javax.jms|jakarta.jms`).
-- **MODIFIED**: Phase 4/5 — added `mkdir -p` prerequisite steps for directories.
-- **MODIFIED**: Container Verification curl annotated as "(localhost only — environment-dependent)".
-- **PRESERVED**: HttpAuthenticationMechanism Quick Reference row (review failure #5).
-- **PRESERVED**: ServiceLoader SPI → CDI @StaticInitSafe tip (review failure #5).
-- **PRESERVED**: Non-Goals entries for EJB security context propagation and BMT→CMT conversion (review failure #5).
-- **PRESERVED**: All existing content from input spec v1.5 changes (EJB2_ENTITY_BEAN_FOUND, @Remove,
-  JNDI resolvable blocker, JPA_NEEDED flag, MockitoExtension guidance, env-entry resolution).
+### High Priority (5+ projects affected)
 
-## Changes to Reference Files
+1. **FIX: javax.* grep filter pattern** (9/24 projects)
+   - Exit Criteria: Replaced broken `| grep -v '^\s*//'` and `| grep -v '^\s*\*'` with
+     colon-aware `| grep -v '^[^:]*:[0-9]*:\s*//'` and `| grep -v '^[^:]*:[0-9]*:\s*\*'`
+   - Same fix applied in Validation Commands section
+   - Root cause: grep -rn output prefixes `filename:lineno:` so bare `^\s*` never matched
+   - Added `javax\.xml\|javax\.annotation\|javax\.management` to exclusion list (judge recommendation)
 
-### references/ejb-to-cdi-mapping.md
-- **ADDED**: "@PostConstruct → StartupEvent: Test Compatibility Pattern" subsection with full
-  before/after example and 4-point rules list. Driven by: 3 projects (jms-mdb, security-stateful-jsf,
-  simple-ejb-jpa).
-- **ADDED**: "@Schedules (Plural) → Multiple @Scheduled Methods" subsection.
-  Driven by: jms-mdb-messaging-wildfly-war.
+2. **ADD: Phase 1 Javadoc javax.* cleanup step** (8/24 projects)
+   - Added inline instruction to Phase 1 namespace migration bullet: after swapping imports,
+     also scan Javadoc blocks and inline comments for literal javax.* strings — replace with prose
+   - Extended Tips item about MIGRATION comments to also cover pre-existing Javadoc
 
-### references/jms-to-smallrye.md
-- **ADDED**: "Test Profile Configuration (In-Memory Connector)" section — mandatory for tests.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **ADDED**: "Message Properties / Headers Warning" section — Emitter<String> loses JMS properties.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **ADDED**: "Durable Subscription Mapping" table.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **PRESERVED**: Structured Message Types / JSON deserialization section (review failure #2).
-- **PRESERVED**: @Outgoing pipeline pattern (review failure #2).
-- **PRESERVED**: Detailed ack/nack code examples (review failure #2).
-- **PRESERVED**: XA/Outbox pattern 3rd option (review failure #2).
+3. **REWRITE: Phase 4 assertion arg reorder rule** (5/24 projects)
+   - Removed misleading "3-arg overloads ONLY" and "2-arg exemption" language
+   - New wording: "Reorder required whenever first argument is a String message, regardless of
+     total arg count. Exemption: calls with NO message parameter."
+   - Added `assertNotEquals` to the enumerated affected-forms list
 
-### references/jpa-to-quarkus-persistence.md
-- **ADDED**: "WildFly ExampleDS Default → H2 In-Memory" section.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **ADDED**: "Persistence Unit Name Resolution" section (unitName='primary' → plain @Inject).
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **PRESERVED**: Entire Hibernate Envers section (review failure #1).
-- **PRESERVED**: Entire Hibernate Search section (review failure #1).
-- **PRESERVED**: Lazy Loading in Native Mode section (review failure #1).
-- **PRESERVED**: PanacheEntity active record pattern (review failure #1).
-- **PRESERVED**: All 18 property table rows including physical_naming_strategy,
-  implicit_naming_strategy, order_inserts, order_updates, generate_statistics,
-  default_catalog, Connection pool (review failure #1).
+4. **EXPAND: Phase 4 strict stubbing audit** (5/24 projects)
+   - Added 3 sub-rules: (a) retry-loop stubs ARE reachable; (b) inline mock() calls tracked
+     equally; (c) void stub refinement — delete doNothing() ONLY when method is NEVER called
+   - Refined from "delete doNothing() unconditionally" to conditional rule
 
-### references/arquillian-to-quarkustest.md
-- **ADDED**: Expanded "Path configuration with root-path" note with GitHub #28001 reference
-  and @TestHTTPResource pattern for /q/health.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **PRESERVED**: CDI Beans per Profile alternative (review failure #3).
-- **PRESERVED**: Full TestContainers implementation (review failure #3).
-- **PRESERVED**: All JUnit 4→5 Quick Reference assertion rows (review failure #3).
-- **PRESERVED**: Detection command for assertion migration (review failure #3).
-- **PRESERVED**: Continuous-testing config (review failure #3).
+5. **ADD: Phase 5 mandatory pre-validation .bak gate** (5/24 projects)
+   - Added as FIRST bullet of Phase 5: `find ... -delete`
+   - Per-phase reminders kept intact as defense-in-depth
 
-### references/application-properties-checklist.md
-- **ADDED**: SmallRye in-memory test profile entries in SmallRye section.
-  Driven by: jms-mdb-messaging-wildfly-war.
-- **PRESERVED**: Micrometer section (review failure #4).
-- **PRESERVED**: JTA Minimal Configuration section (review failure #4).
-- **PRESERVED**: Embedded Artemis config (review failure #4).
+### Medium Priority (2-3 projects affected)
 
-### references/troubleshooting-pitfalls.md
-- **ADDED**: "Gradle + mvn BUILD COMMAND mismatch" row in symptom table + detail section.
-  Driven by: gradle-ejb-jpa-concurrency-wildfly.
-- **ADDED**: "find exit-code false positive" row + section.
-  Driven by: jms-mdb-messaging-wildfly-war.
+6. **QUALIFY: Phase 2 @PostConstruct removal scope** (2 projects + judge)
+   - Reworded to explicitly state: "@PostConstruct removal applies ONLY to @Singleton+@Startup
+     pattern. For all other bean types, RETAIN and migrate to jakarta.annotation.PostConstruct."
+   - Also updated Common Patterns section for consistency
 
-### references/phases-detail.md
-- **ADDED**: Phase 3 messaging validation grep (review failure #6).
-- **ADDED**: `mkdir -p` prerequisite for Phase 4 Step 16 (META-INF/resources/).
-- **ADDED**: `mkdir -p src/main/docker/` prerequisite for Phase 5 Step 19.
+7. **FIX: H2 test profile completeness** (2 projects)
+   - Phase 4 "Build file companion steps" now includes full property set:
+     `%test.quarkus.datasource.jdbc.url`, `username=sa`, `password=`
+   - Added note: "Required when main config has a non-H2 jdbc.url"
 
-## Unchanged Reference Files (carried forward)
-- references/arc-limitations.md
-- references/batch-jberet-fallback.md
-- references/compatibility-matrix.md
-- references/ear-consolidation.md
-- references/jsf-migration-patterns.md
-- references/pattern-remote-ejb-limitation.md
-- references/phase0-detection-flags.md
-- references/quarkus-extension-catalog.md
-- references/security-migration.md
-- references/worked-examples-complete.md
+8. **RENAME + EXTEND: "pom.xml companion steps" → "Build file companion steps"** (2 projects)
+   - Renamed label to be build-tool-neutral
+   - Added Gradle equivalents: `testImplementation` declarations with BOM management
+
+9. **FIX: ELYTRON_SECURITY_DOMAIN find command** (judge recommendation)
+   - Changed from `find . -name 'jboss-ejb3.xml' -o -name 'jboss-app.xml' | xargs...`
+     to `find . \( -name 'jboss-ejb3.xml' -o -name 'jboss-app.xml' \) | xargs...`
+   - Escaped parentheses fix the operator precedence bug
+
+## Reference Files Updated
+
+### `references/jpa-to-quarkus-persistence.md`
+- **Added**: "Property Conflict Resolution" section with 3 rules:
+  - Rule 1: JPA standard property wins over Hibernate vendor property
+  - Rule 2: Do NOT set dialect when db-kind is configured
+  - Rule 3: Drop hibernate.order_inserts/order_updates (no Quarkus equivalent)
+- **Removed**: `hibernate.order_inserts` and `hibernate.order_updates` rows from Property
+  Mapping Table (previously mapped to non-existent `quarkus.hibernate-orm.order-inserts/updates`)
+- **Added**: `javax.persistence.schema-generation.database.action` row to mapping table
+- Source for drop: https://github.com/quarkusio/quarkus/issues/19129
+
+### `references/batch-jberet-fallback.md`
+- **Fixed**: @Transactional placement — moved from `processChunk()` (self-invocation, bypasses
+  CDI proxy) to `readItems()` and `writeItems()` methods on separate beans (cross-bean calls)
+- **Added**: "CDI Self-Invocation Warning" callout explaining proxy bypass
+- **Restructured**: Component implementations now show @Transactional on reader/writer beans
+
+## Reference Files Unchanged (carried forward)
+
+- `references/application-properties-checklist.md`
+- `references/arc-limitations.md`
+- `references/arquillian-to-quarkustest.md`
+- `references/compatibility-matrix.md`
+- `references/ear-consolidation.md`
+- `references/ejb-to-cdi-mapping.md`
+- `references/jms-to-smallrye.md`
+- `references/jsf-migration-patterns.md`
+- `references/pattern-remote-ejb-limitation.md`
+- `references/phase0-detection-flags.md`
+- `references/phases-detail.md`
+- `references/quarkus-extension-catalog.md`
+- `references/security-migration.md`
+- `references/troubleshooting-pitfalls.md`
+- `references/worked-examples-complete.md`
 
 ## Removed Content
-None. All content from the input spec is preserved in the output.
+
+None. This is a refine iteration — all content preserved.
+
+## Projects Driving Changes
+
+| Change | Driven By |
+|---|---|
+| Grep filter fix | phase0-noop-already-quarkus, quarkus-config-traps-micro, simple-ejb-jpa-wildfly-war, soap-batch-payara-war, wildfly-fqn-annotation-jndi-micro, wildfly-jms-reactive-async-war, wildfly-lra-booking-war, wildfly-mockito-uni-strictmode-micro, wildfly-observability-spi-war |
+| Javadoc cleanup | jms-mdb-messaging-wildfly-war, junit5-assertion-safety-micro, simple-ejb-jpa-wildfly-war, soap-batch-payara-war, wildfly-jms-reactive-async-war, wildfly-lra-booking-war, wildfly-mockito-uni-strictmode-micro, wildfly-observability-spi-war |
+| Assertion reorder | descriptor-config-properties-micro, gradle-ear-multimodule-wildfly, payara-stateful-security-jpa-war, simple-ejb-jpa-wildfly-war, wildfly-lra-booking-war |
+| Strict stubbing | junit4-migration-pitfalls, junit5-assertion-safety-micro, maven-concurrency-panache-wildfly, wildfly-jms-reactive-async-war, wildfly-mockito-uni-strictmode-micro |
+| .bak gate | jms-mdb-messaging-wildfly-war, junit5-assertion-safety-micro, maven-concurrency-panache-wildfly, simple-ejb-jpa-wildfly-war, soap-batch-payara-war |
+| @PostConstruct scope | payara-qute-async-emitter-war, security-stateful-jsf-wildfly-war |
+| JPA property conflicts | wildfly-fqn-annotation-jndi-micro, wildfly-jms-reactive-async-war, wildfly-lra-booking-war |
+| H2 test profile | payara-qute-async-emitter-war, payara-stateful-security-jpa-war |
+| Build file companion | gradle-ear-multimodule-wildfly, gradle-ejb-jpa-concurrency-wildfly |
 
 ### Sources
-- `REST Assured basePath path-doubling with root-path` -- `https://github.com/quarkusio/quarkus/issues/28001` -- "Expected behavior: http request from RestAssured is correct. Actual behavior: http request url contains two values from quarkus.http.root-path and fails with 404"
-- `SmallRye in-memory connector for test isolation` -- `https://smallrye.io/smallrye-reactive-messaging/4.24.0/concepts/testing/` -- "SmallRye Reactive Messaging proposes an in-memory connector for this exact purpose"
-- `Quarkus @Scheduled only one cron per annotation` -- `https://quarkus.io/guides/scheduler-reference` -- "The syntax used in CRON expressions is controlled by quarkus.scheduler.cron-type property"
+
+- `hibernate.order_inserts/order_updates no Quarkus equivalent` -- `https://github.com/quarkusio/quarkus/issues/19129` -- "order_updates is enforced by Quarkus; other properties are mapped from general Quarkus properties"

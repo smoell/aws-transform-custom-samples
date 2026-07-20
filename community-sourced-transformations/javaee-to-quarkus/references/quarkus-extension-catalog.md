@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | JAX-RS (REST) | RESTEasy Reactive | `quarkus-rest` | ✅ Stable | **Recommended**. Reactive + blocking support. Formerly `quarkus-resteasy-reactive` |
 | JAX-RS (REST, classic) | RESTEasy Classic | `quarkus-resteasy` | ✅ Stable | Legacy path; use `quarkus-rest` for new migrations |
-| JAX-RS + JSON | RESTEasy Reactive Jackson | `quarkus-rest-jackson` | ✅ Stable | Transitive via `quarkus-rest`; explicit if needed |
+| JAX-RS + JSON | RESTEasy Reactive Jackson | `quarkus-rest-jackson` | ✅ Stable | **Detection rule**: If ANY REST endpoint returns/consumes non-String/Response/primitive types → include this extension. Without it, 415 Unsupported Media Type or empty responses occur silently. |
 | JAX-RS + JSON-B | RESTEasy Reactive JSON-B | `quarkus-rest-jsonb` | ✅ Stable | Alternative to Jackson |
 | Servlet API | Undertow | `quarkus-undertow` | ✅ Stable | Only if Servlet API required; prefer JAX-RS |
 | WebSocket (JSR 356) | WebSockets | `quarkus-websockets` | ✅ Stable | JSR 356 compatible |
@@ -57,7 +57,7 @@
 
 | JavaEE Spec | Quarkus Extension | Maven artifactId | Status | Notes |
 |---|---|---|---|---|
-| Bean Validation (JSR 380) | Hibernate Validator | `quarkus-hibernate-validator` | ✅ Stable | Jakarta Validation 3.0 |
+| Bean Validation (JSR 380) | Hibernate Validator | `quarkus-hibernate-validator` | ✅ Stable | Jakarta Validation 3.0. **Must be added explicitly** — NOT a transitive dependency of `quarkus-hibernate-orm`. Trigger: `@NotNull`, `@Size`, `@Email`, `@Positive`, `@Min`, `@Max`, `@Pattern`, `@Valid` in source. |
 
 ## Messaging
 
@@ -159,6 +159,7 @@
 | JavaEE Spec | Quarkus Extension | Maven artifactId | Status | Notes |
 |---|---|---|---|---|
 | JSF (Facelets) → Qute | Qute | `quarkus-rest-qute` | ✅ Stable | Quarkus-native template engine |
+| JSF → Qute Web | Qute Web | `quarkus-qute-web` | 🔴 Community | `io.quarkiverse.qute.web:quarkus-qute-web`; file-based routing for .html templates |
 | JSF (preserve) | MyFaces | `myfaces-quarkus` | 🔴 Community | `org.apache.myfaces.core.extensions.quarkus:myfaces-quarkus`; limited native support |
 
 ## Containerization / Deployment
@@ -175,13 +176,13 @@
 
 | JavaEE Spec | Quarkus Extension | Maven artifactId | Status | Notes |
 |---|---|---|---|---|
-| Arquillian → QuarkusTest | JUnit 5 | `quarkus-junit5` | ✅ Stable | Core test framework |
+| Arquillian → QuarkusTest | JUnit 5 | `quarkus-junit` | ✅ Stable | Core test framework (formerly quarkus-junit; Maven relocation in place) |
 | REST testing | REST Assured | `rest-assured` (io.rest-assured) | ✅ Stable | BOM-managed; fluent HTTP testing |
-| CDI mocking | JUnit 5 Mockito | `quarkus-junit5-mockito` | ✅ Stable | `@InjectMock`, `@InjectSpy` |
+| CDI mocking | JUnit 5 Mockito | `quarkus-junit-mockito` | ✅ Stable | `@InjectMock`, `@InjectSpy` (formerly quarkus-junit-mockito) |
 | Test H2 database | Test H2 | `quarkus-test-h2` | ✅ Stable | H2 for integration tests |
 | TestContainers | Test Containers | `quarkus-test-containers` | ✅ Stable | TestContainers lifecycle management |
 | Code coverage | JaCoCo | `quarkus-jacoco` | ✅ Stable | Coverage reports |
-| Security testing | Security Test | `quarkus-test-security` | ✅ Stable | `@TestSecurity` for role injection |
+| Security testing | Security Test | `quarkus-test-security` | ✅ Stable | `@TestSecurity` for role injection. Required when tests use `@TestSecurity(user="...", roles="...")` — not transitive from quarkus-security. |
 
 ## gRPC
 

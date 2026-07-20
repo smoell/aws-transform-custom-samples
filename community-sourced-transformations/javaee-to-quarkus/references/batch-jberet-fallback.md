@@ -24,20 +24,21 @@ When `quarkus-jberet` is incompatible, use CDI-based batch processing:
 
 ### Pattern: Manual Batch Composition
 
+> **⚠️ CDI Self-Invocation Warning**: `@Transactional` (and all CDI interceptors) only applies when a method is called through the CDI proxy — i.e., from an external bean. Self-calls within the same bean (`this.method()`) bypass the interceptor entirely. Place `@Transactional` on the cross-bean method calls (reader/writer), NOT on the launcher's internal orchestration methods.
+
 ```java
 @ApplicationScoped
 public class BatchProcessor {
     
     @Inject
-    ItemReader itemReader;
+    DatabaseItemReader itemReader;
     
     @Inject 
-    ItemProcessor itemProcessor;
+    DataProcessor itemProcessor;
     
     @Inject
-    ItemWriter itemWriter;
+    DatabaseItemWriter itemWriter;
     
-    @Transactional
     public void processChunk(List<Object> items) {
         List<Object> processedItems = new ArrayList<>();
         for (Object item : items) {
@@ -46,7 +47,7 @@ public class BatchProcessor {
                 processedItems.add(processed);
             }
         }
-        itemWriter.writeItems(processedItems);
+        itemWriter.writeItems(processedItems);  // @Transactional on writer (cross-bean call → proxy intercepts)
     }
     
     @Scheduled(every = "PT1H") // Run hourly
@@ -63,37 +64,45 @@ public class BatchProcessor {
 
 ```java
 @ApplicationScoped
-public class DatabaseItemReader implements ItemReader {
+public class DatabaseItemReader {
     @Inject
     EntityManager em;
     
     private int currentOffset = 0;
     private final int chunkSize = 100;
     
+    @Transactional  // cross-bean call — proxy intercepts correctly
     public List<Object> readItems(int count) {
-        List<Object> items = em.createQuery("SELECT e FROM Entity e")
+        List<Object> items = em.createQuery("SELECT e FROM Entity e ORDER BY e.id")
                                .setFirstResult(currentOffset)
                                .setMaxResults(count)
                                .getResultList();
-        currentOffset += count;
+        if (items.isEmpty()) {
+            return null;  // signal end-of-data
+        }
+        currentOffset += items.size();  // advance by actual result count, not requested count
         return items;
+    }
+    
+    public void reset() {
+        currentOffset = 0;  // call before each job execution for re-runnability
     }
 }
 
 @ApplicationScoped  
-public class DataProcessor implements ItemProcessor {
+public class DataProcessor {
     public Object processItem(Object item) {
         // Transform/validate item
-        return transformedItem;
+        return item; // transformed
     }
 }
 
 @ApplicationScoped
-public class DatabaseItemWriter implements ItemWriter {
+public class DatabaseItemWriter {
     @Inject
     EntityManager em;
     
-    @Transactional
+    @Transactional  // cross-bean call — proxy intercepts correctly
     public void writeItems(List<Object> items) {
         for (Object item : items) {
             em.persist(item);
@@ -123,9 +132,15 @@ The WildFly `batch-processing` quickstart was migrated using this pattern:
 ```java
 @ApplicationScoped
 public class ChunkSimpleBatch {
+    @Inject SimpleItemReader reader;
+    @Inject SimpleItemWriter writer;
+
     @Scheduled(cron = "0 0 2 * * ?") // 2 AM daily
     public void executeJob() {
-        processInChunks(3); // item-count=3 from XML
+        List<Object> chunk;
+        while ((chunk = reader.readItems(3)) != null && !chunk.isEmpty()) {
+            writer.writeItems(chunk);  // @Transactional on writer bean
+        }
     }
 }
 ```
@@ -134,7 +149,7 @@ public class ChunkSimpleBatch {
 
 1. **No XML Configuration**: Pure CDI approach
 2. **Quarkus Native**: Works with native compilation
-3. **Transactional Control**: Explicit @Transactional boundaries
+3. **Transactional Control**: Explicit @Transactional on cross-bean calls (proxy-intercepted)
 4. **Scheduling Integration**: Use @Scheduled for triggers
 5. **Testability**: Standard CDI testing patterns
 

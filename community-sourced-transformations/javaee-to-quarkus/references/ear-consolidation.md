@@ -162,6 +162,21 @@ public class CustomerServiceIT {
 3. **Class Name Conflicts**: Resolve duplicate class names across modules
 4. **Context Paths**: Update hardcoded module paths in code
 
+## Sub-Module Directory Cleanup
+
+After consolidating all source code into `src/main/java/`, delete the original sub-module directories:
+
+```bash
+# Delete sub-module directories (example — adapt to actual module names)
+rm -rf ejb-module/ web-module/ ear-module/
+
+# Verify: no Java files remain outside src/ (excluding target/ and build/)
+find . -maxdepth 3 -name "*.java" -not -path "./src/*" -not -path "./target/*" -not -path "./build/*"
+# Must return empty
+```
+
+**When**: After all source move is complete, before running the first consolidated build.
+
 ## Validation Checklist
 
 - [ ] All source code merged without conflicts

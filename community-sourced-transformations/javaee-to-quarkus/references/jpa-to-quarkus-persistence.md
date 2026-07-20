@@ -5,9 +5,7 @@
 
 ## persistence.xml → application.properties Mapping
 
-### Before/After Example
-
-**BEFORE** — `META-INF/persistence.xml` with a `<persistence-unit name="primary" transaction-type="JTA">`, a `<jta-data-source>`, and `<properties>` for JDBC URL/user/password/driver plus `hibernate.dialect`, `hibernate.hbm2ddl.auto`, `show_sql`, `format_sql`, `default_schema`, `jdbc.batch_size`, `order_inserts`, `order_updates`, second-level cache.
+**BEFORE** — `META-INF/persistence.xml` with `<persistence-unit name="primary" transaction-type="JTA">`, a `<jta-data-source>`, and `<properties>` for JDBC URL/user/password/driver + `hibernate.dialect`, `hbm2ddl.auto`, `show_sql`, `format_sql`, `default_schema`, `jdbc.batch_size`, `order_inserts`, `order_updates`, second-level cache.
 
 **AFTER** — `src/main/resources/application.properties`:
 
@@ -21,15 +19,13 @@ quarkus.datasource.jdbc.max-size=20
 quarkus.datasource.jdbc.min-size=5
 
 # Hibernate ORM
-quarkus.hibernate-orm.database.generation=validate
+quarkus.hibernate-orm.schema-management.strategy=validate
 quarkus.hibernate-orm.log.sql=true
 quarkus.hibernate-orm.log.format-sql=true
 quarkus.hibernate-orm.database.default-schema=app
 quarkus.hibernate-orm.jdbc.statement-batch-size=25
-# Dialect auto-detected from db-kind — omit unless overriding
-# Second-level cache (per entity)
+# Dialect auto-detected from db-kind — omit (see Dialect Rules)
 quarkus.hibernate-orm.cache."com.example.model.Product".expiration.max-idle=3600
-# Statistics (dev/test only)
 %dev.quarkus.hibernate-orm.statistics=true
 %test.quarkus.hibernate-orm.statistics=true
 ```
@@ -43,19 +39,20 @@ quarkus.hibernate-orm.cache."com.example.model.Product".expiration.max-idle=3600
 | `javax.persistence.jdbc.password` | `quarkus.datasource.password` | Direct |
 | `javax.persistence.jdbc.driver` | (auto-detected) | Inferred from `db-kind` |
 | `<jta-data-source>java:jboss/...` | `quarkus.datasource.*` | No JNDI — configure directly |
-| `hibernate.dialect` | `quarkus.hibernate-orm.dialect` | Usually auto-detected; omit unless custom |
-| `hibernate.hbm2ddl.auto` | `quarkus.hibernate-orm.database.generation` | `none`/`create`/`drop-and-create`/`update`/`validate` |
+| `hibernate.dialect` | `quarkus.hibernate-orm.dialect` | **Omit** — ORM 6 auto-detects from `db-kind`. See Dialect Rules. |
+| `hibernate.hbm2ddl.auto` | `quarkus.hibernate-orm.schema-management.strategy` | `none`/`create`/`drop-and-create`/`update`/`validate`. Renamed from `database.generation` in 3.23 (old key warns). |
+| `javax.persistence.schema-generation.database.action` | `quarkus.hibernate-orm.schema-management.strategy` | JPA standard — see Property Conflict Resolution |
 | `hibernate.show_sql` | `quarkus.hibernate-orm.log.sql` | |
 | `hibernate.format_sql` | `quarkus.hibernate-orm.log.format-sql` | |
 | `hibernate.default_schema` | `quarkus.hibernate-orm.database.default-schema` | |
 | `hibernate.default_catalog` | `quarkus.hibernate-orm.database.default-catalog` | |
 | `hibernate.jdbc.batch_size` | `quarkus.hibernate-orm.jdbc.statement-batch-size` | |
-| `hibernate.order_inserts` | `quarkus.hibernate-orm.order-inserts` | |
-| `hibernate.order_updates` | `quarkus.hibernate-orm.order-updates` | |
+| `hibernate.order_inserts` | *(drop — no equivalent)* | ORM 6 orders automatically when batch-size set |
+| `hibernate.order_updates` | *(drop — no equivalent)* | Same |
 | `hibernate.generate_statistics` | `quarkus.hibernate-orm.statistics` | |
 | `hibernate.physical_naming_strategy` | `quarkus.hibernate-orm.physical-naming-strategy` | FQ class name |
 | `hibernate.implicit_naming_strategy` | `quarkus.hibernate-orm.implicit-naming-strategy` | FQ class name |
-| `hibernate.cache.use_second_level_cache` | (configure per-entity) | See caching below |
+| `hibernate.cache.use_second_level_cache` | (per-entity) | See caching |
 | Connection pool (C3P0/HikariCP) | `quarkus.datasource.jdbc.*` | Quarkus uses Agroal |
 
 ### Database Kind Values
@@ -70,9 +67,22 @@ quarkus.hibernate-orm.cache."com.example.model.Product".expiration.max-idle=3600
 | DB2 | `db2` | `quarkus-jdbc-db2` |
 | Derby | `derby` | `quarkus-jdbc-derby` |
 
-### Connection Pool (Agroal)
+## Property Conflict Resolution
 
-Quarkus uses Agroal (replaces C3P0/HikariCP/app-server pools):
+**Rule 1 — JPA standard wins over Hibernate vendor property.** If both `javax.persistence.schema-generation.database.action` and `hibernate.hbm2ddl.auto` are present, map the JPA standard value to `schema-management.strategy`; discard the Hibernate one. (`none`→`none`, `create`→`create`, `drop-and-create`→`drop-and-create`, `drop`→`drop`.)
+
+**Rule 2 — Do NOT set dialect when db-kind is configured.** ORM 6 auto-detects; setting `quarkus.hibernate-orm.dialect` alongside `db-kind` causes version-mismatch errors. Discard `hibernate.dialect`.
+
+**Rule 3 — Drop properties with no Quarkus equivalent**: `hibernate.order_inserts`, `hibernate.order_updates` (ORM 6 orders automatically with JDBC batching), `hibernate.batch_versioned_data` (internal). Source: [Quarkus #19129](https://github.com/quarkusio/quarkus/issues/19129).
+
+## Dialect Rules (Hibernate ORM 6.x)
+
+1. **NEVER set dialect when db-kind is configured** — auto-detected; explicit dialect → version-mismatch errors.
+2. **Version-specific dialects removed** — `Oracle12cDialect`, `PostgreSQL10Dialect`, `MySQL8Dialect` etc. gone in ORM 6. Use base: `OracleDialect`, `PostgreSQLDialect`, `MySQLDialect`.
+3. **Omit properties equal to Quarkus defaults** (e.g. `log.sql=false`).
+4. **sql-load-script conditional** — `sql-load-script=import.sql` only needed when strategy is `create`/`drop-and-create`.
+
+### Connection Pool (Agroal)
 
 ```properties
 quarkus.datasource.jdbc.min-size=5
@@ -85,120 +95,99 @@ quarkus.datasource.jdbc.leak-detection-interval=1M
 
 ### JTA DataSource JNDI Resolution
 
-When persistence.xml references a JNDI datasource, locate the actual JDBC details from: (1) `*-ds.xml` in the project, (2) `standalone.xml` datasource subsystem, or (3) app-server admin console. Extract URL/driver/username/password and configure directly — there is no JNDI in Quarkus.
+When persistence.xml references a JNDI datasource, locate actual JDBC details from: (1) `*-ds.xml`, (2) `standalone.xml` datasource subsystem, (3) app-server admin console. Configure directly — no JNDI in Quarkus.
 
 ## WildFly ExampleDS Default → H2 In-Memory
 
-When persistence.xml references `java:jboss/datasources/ExampleDS` (WildFly default) with no explicit JDBC URL, this implies H2 in-memory:
-
+`java:jboss/datasources/ExampleDS` (WildFly default, no explicit URL) implies H2 in-memory:
 ```properties
 quarkus.datasource.db-kind=h2
 quarkus.datasource.jdbc.url=jdbc:h2:mem:appname;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
 ```
-
-**Do NOT set `quarkus.hibernate-orm.dialect`** — Hibernate ORM 6.x auto-detects from `db-kind`; an explicit dialect can cause version-mismatch errors.
+Do NOT set an explicit dialect (auto-detected from `db-kind`).
 
 ## Persistence Unit Name Resolution
 
-`@PersistenceContext(unitName = "primary")` referencing the single PU named "primary" (common WildFly convention) maps to a plain `@Inject EntityManager` — no qualifier needed:
-
+`@PersistenceContext(unitName = "primary")` (or any name) referencing the SINGLE persistence unit maps to plain `@Inject EntityManager` — no qualifier. `@PersistenceUnit("name")` is ONLY for apps with MULTIPLE units.
 ```java
-// BEFORE                                  // AFTER
-@PersistenceContext(unitName = "primary")  @Inject
-private EntityManager em;                  EntityManager em;
+// BEFORE: @PersistenceContext(unitName = "primary") private EntityManager em;
+// AFTER:  @Inject EntityManager em;
 ```
-
-Only use `@PersistenceUnit("name")` when the app has MULTIPLE persistence units to distinguish.
 
 ## Multi-Datasource Patterns
 
 ```properties
-# Default datasource (unnamed — plain @Inject EntityManager)
+# Default (unnamed → plain @Inject EntityManager)
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:5432/orders
 quarkus.datasource.username=order_user
 quarkus.datasource.password=[REDACTED_PASSWORD]
 
-# Named datasource "inventory"
+# Named "inventory"
 quarkus.datasource."inventory".db-kind=postgresql
 quarkus.datasource."inventory".jdbc.url=jdbc:postgresql://localhost:5432/inventory
 quarkus.datasource."inventory".username=inv_user
 quarkus.datasource."inventory".password=[REDACTED_PASSWORD]
 
-# Hibernate ORM — default + named persistence units
-quarkus.hibernate-orm.database.generation=validate
+quarkus.hibernate-orm.schema-management.strategy=validate
 quarkus.hibernate-orm.packages=com.example.orders.model
 quarkus.hibernate-orm."inventory".datasource=inventory
-quarkus.hibernate-orm."inventory".database.generation=validate
+quarkus.hibernate-orm."inventory".schema-management.strategy=validate
 quarkus.hibernate-orm."inventory".packages=com.example.inventory.model
 ```
 
 ```java
 @ApplicationScoped
 public class MultiDatasourceService {
-    @Inject EntityManager defaultEm;                          // default PU
-    @Inject @PersistenceUnit("inventory") EntityManager inventoryEm;  // named PU
+    @Inject EntityManager defaultEm;                                 // default PU
+    @Inject @PersistenceUnit("inventory") EntityManager inventoryEm; // named PU
 
-    @Transactional
-    public void createOrder(Order order) { defaultEm.persist(order); }
+    @Transactional public void createOrder(Order o) { defaultEm.persist(o); }
 
-    @Transactional
-    @PersistenceUnit("inventory")  // qualifies the transaction manager too
-    public void updateInventory(InventoryItem item) { inventoryEm.merge(item); }
+    @Transactional @PersistenceUnit("inventory")  // qualifies TX manager too
+    public void updateInventory(InventoryItem i) { inventoryEm.merge(i); }
 }
 ```
 
-**Notes**: Each named PU needs its own `packages` config; an entity cannot belong to multiple PUs. `@Transactional` uses the default transaction manager — qualify with `@PersistenceUnit("name")` on the method for named datasources. Each `persistence.xml` `<persistence-unit>` becomes a named datasource + named Hibernate ORM block.
+**Notes**: each named PU needs its own `packages`; an entity cannot belong to multiple PUs; `@Transactional` uses the default TX manager unless qualified with `@PersistenceUnit("name")`; each `persistence.xml` `<persistence-unit>` becomes a named datasource + named ORM block.
 
 ## Optional: Panache Migration
 
-> **IMPORTANT**: Panache adoption is OPTIONAL. Do NOT force conversion on existing codebases. Adopt only when: starting new entities/repositories from scratch, the team explicitly requests it, or the app has simple CRUD patterns that benefit from boilerplate reduction.
+> **OPTIONAL** — do NOT force on existing codebases. Adopt only for: new entities from scratch, explicit team request, or simple CRUD that benefits from less boilerplate.
 
-### Repository Pattern — PanacheRepository
-
-```xml
-<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-hibernate-orm-panache</artifactId></dependency>
-```
-
+**Repository pattern:**
 ```java
-// A manual EntityManager repository becomes:
 @ApplicationScoped
 public class OrderRepository implements PanacheRepository<Order> {
-    // findById(), persist(), delete(), count(), listAll() — all inherited
+    // findById/persist/delete/count/listAll inherited
     public List<Order> findByStatus(String status) { return list("status", status); }
 }
 ```
 
-### Active Record Pattern — PanacheEntity
-
+**Active record:**
 ```java
 @Entity
-public class Order extends PanacheEntity {   // id field inherited (auto-generated Long)
-    public String status;                    // public fields — no getters/setters needed
-    public BigDecimal total;
-    public static List<Order> findByStatus(String status) { return list("status", status); }
+public class Order extends PanacheEntity {   // auto Long id
+    public String status; public BigDecimal total;   // public fields, no getters/setters
+    public static List<Order> findByStatus(String s) { return list("status", s); }
 }
-// Usage: order.persist();  Order.findById(1L);  Order.deleteById(1L);
+// order.persist();  Order.findById(1L);  Order.deleteById(1L);
 ```
 
-- `PanacheEntity` — provides auto-generated `Long id`. Use for simple auto-increment IDs.
-- `PanacheEntityBase` — no ID field. Use for custom ID type or composite key (declare your own `@Id`).
-
-### When to Recommend Panache vs Plain JPA
+- `PanacheEntity` — auto `Long id`. `PanacheEntityBase` — no id field (custom/composite key: declare your own `@Id`).
 
 | Use Panache When | Keep Plain JPA When |
 |---|---|
-| Simple CRUD-heavy application | Complex query logic with Criteria API |
-| New entities created during migration | Large existing entity model (avoid rewrite) |
-| Team familiar with active record | Team prefers explicit EntityManager control |
-| Rapid prototyping / small services | Multi-datasource with complex TX routing |
+| Simple CRUD-heavy app | Complex Criteria API queries |
+| New entities in migration | Large existing entity model |
+| Team knows active record | Team prefers explicit EntityManager |
+| Rapid prototyping | Multi-datasource w/ complex TX routing |
 
 ## Hibernate-Specific Features
 
-Fully supported in Hibernate 6.x (bundled with quarkus-hibernate-orm): `@NaturalId`, `@Formula`, `@Filter`/`@FilterDef`, `@SQLDelete`/`@Where`, `@DynamicInsert`/`@DynamicUpdate`, `@BatchSize`, `@Fetch`, `@GenericGenerator`, second-level cache (`@jakarta.persistence.Cacheable`). `@TypeDef`/`@Type` changed in Hibernate 6 — see below.
+Fully supported in ORM 6.x: `@NaturalId`, `@Formula`, `@Filter`/`@FilterDef`, `@SQLDelete`/`@Where`, `@DynamicInsert`/`@DynamicUpdate`, `@BatchSize`, `@Fetch`, `@GenericGenerator`, second-level cache (`@jakarta.persistence.Cacheable`). `@TypeDef`/`@Type` changed — see below.
 
-### Hibernate Envers (Audit)
-
+**Envers (audit):**
 ```xml
 <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-hibernate-envers</artifactId></dependency>
 ```
@@ -208,8 +197,7 @@ quarkus.hibernate-envers.audit-table-suffix=_AUD
 ```
 `@Audited` works unchanged after namespace migration.
 
-### Hibernate Search
-
+**Hibernate Search:**
 ```xml
 <dependency><groupId>io.quarkus</groupId><artifactId>quarkus-hibernate-search-orm-elasticsearch</artifactId></dependency>
 ```
@@ -219,70 +207,41 @@ quarkus.hibernate-search-orm.elasticsearch.hosts=localhost:9200
 ```
 `@Indexed`, `@FullTextField`, `@KeywordField` work as-is.
 
-### @Type Migration (Hibernate 5 → 6)
-
+**@Type migration (Hibernate 5 → 6):**
 ```java
-// BEFORE (Hibernate 5)                      // AFTER (Hibernate 6)
-@Type(type = "org.hibernate.type.TextType")  @JdbcTypeCode(Types.LONGVARCHAR)
-private String description;                   private String description;
-
-@Type(type = "json")                          @Type(JsonType.class)  // class ref, not string
-private Map<String,Object> metadata;          @Column(columnDefinition = "jsonb")
-                                              private Map<String,Object> metadata;
+// BEFORE @Type(type="org.hibernate.type.TextType")  →  AFTER @JdbcTypeCode(Types.LONGVARCHAR)
+// BEFORE @Type(type="json")                          →  AFTER @Type(JsonType.class) + @Column(columnDefinition="jsonb")
 ```
 
-### Second-Level Cache
-
+**Second-level cache:**
 ```properties
 quarkus.hibernate-orm.cache."com.example.model.Product".expiration.max-idle=3600
-quarkus.hibernate-orm.cache."com.example.model.Category".memory.object-count=1000
 ```
 ```java
-@Entity @Cacheable  // jakarta.persistence.Cacheable
+@Entity @Cacheable
 @org.hibernate.annotations.Cache(usage = CacheConcurrencyStrategy.READ_WRITE)
 public class Product { ... }
 ```
 
 ## Key Differences from App-Server JPA
 
-### No JNDI DataSource Lookup
+**No JNDI datasource lookup** — configure in `application.properties`; programmatic access via `@Inject AgroalDataSource` (default) or `@Inject @io.quarkus.agroal.DataSource("inventory") AgroalDataSource`.
 
-Datasources are configured directly in `application.properties` — no JNDI context. For programmatic access:
+**persistence.xml not required (but supported)** — all config → `application.properties`. If present, Quarkus reads it for compatibility (useful during incremental migration). Recommendation: remove it; mixed config causes confusion.
+
+**Build-time entity scanning** — ArC discovers entities at build time. App-source packages: automatic. External JARs: list in `quarkus.hibernate-orm.packages` or provide a Jandex index. Missing-scan symptom: `Unknown entity: com.example.X` at runtime.
+
+**Lazy loading in native mode** — build-time bytecode enhancement makes `@ManyToOne`/`@OneToOne`/`@OneToMany`/`@ManyToMany(fetch=LAZY)` work. Accessing a lazy field outside a session still throws `LazyInitializationException` (harder to debug in native). Best practice: `@Fetch(FetchMode.SUBSELECT)`/`@BatchSize` for collections, `JOIN FETCH` in queries.
+
+**EntityManager injection & transactions** — `@PersistenceContext` still works but `@Inject` is idiomatic. App servers manage TX implicitly; Quarkus needs explicit `@Transactional` (no implicit CMT). A transaction is required even for reads — explicit `@Transactional` on read methods is safest.
 ```java
-@Inject AgroalDataSource dataSource;                                   // default
-@Inject @io.quarkus.agroal.DataSource("inventory") AgroalDataSource inventoryDs;  // named
-```
-
-### persistence.xml Not Required (But Supported)
-
-Quarkus does NOT require `persistence.xml` — all config goes to `application.properties`. If present, Quarkus reads it for compatibility (useful during incremental migration). **Recommendation**: remove `persistence.xml` and use `application.properties` exclusively; mixed config causes confusion.
-
-### Build-Time Entity Scanning
-
-ArC discovers entities at build time. Entities in application source packages are found automatically; entities in external JARs must be listed in `quarkus.hibernate-orm.packages` or the JAR must contain a Jandex index. Missing scanning symptom: `Unknown entity: com.example.SomeEntity` at runtime.
-
-### Lazy Loading in Native Mode
-
-Quarkus enables build-time bytecode enhancement, so `@ManyToOne`/`@OneToOne`/`@OneToMany`/`@ManyToMany(fetch = LAZY)` work in native mode. Accessing a lazy field outside a transaction/session still throws `LazyInitializationException` (harder to debug in native). **Best practice**: use `@Fetch(FetchMode.SUBSELECT)` or `@BatchSize` for collections and `JOIN FETCH` in queries for known access patterns.
-
-### EntityManager Injection & Transactions
-
-```java
-// @PersistenceContext still works, but @Inject is idiomatic:
 @Inject EntityManager em;
 @Inject @PersistenceUnit("inventory") EntityManager inventoryEm;
 ```
 
-App servers manage transactions implicitly; Quarkus needs explicit `@Transactional` (no implicit CMT like `@Stateless`). A transaction is required even for reads for the EntityManager to work — explicit `@Transactional` on read methods is safest.
-
-### import.sql
-
-Quarkus supports `import.sql` in `src/main/resources/` for initial data loading (runs when `database.generation` is `create` or `drop-and-create`):
-
+**import.sql** — supported in `src/main/resources/` (runs when strategy is `create`/`drop-and-create`):
 ```properties
-quarkus.hibernate-orm.database.generation=drop-and-create
-quarkus.hibernate-orm.sql-load-script=import.sql
-# Disable loading: quarkus.hibernate-orm.sql-load-script=no-file
+quarkus.hibernate-orm.schema-management.strategy=drop-and-create
+quarkus.hibernate-orm.sql-load-script=import.sql   # disable: no-file
 ```
-
-**import.sql table names must match `@Table(name=...)`** or Hibernate fails at startup/insert with "table not found". Unlike Spring Boot, there is no `data.sql` convention — use `import.sql` (Hibernate-native).
+Table names in `import.sql` must match `@Table(name=...)` or Hibernate fails at startup. No `data.sql` convention (unlike Spring Boot) — use `import.sql`.

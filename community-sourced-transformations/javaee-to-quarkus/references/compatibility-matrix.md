@@ -6,6 +6,7 @@
 |---|---|---|---|
 | Quarkus | 3.33.x LTS | JDK 17/21 | Recommended LTS line |
 | Maven | 3.8+ | Required | Build tool minimum |
+| Gradle | 8.10+ | Recommended | 8.5 has known classloader conflicts with Quarkus 3.33.x; use 8.10+ |
 | Hibernate ORM | 6.x | Auto-managed | Via quarkus-hibernate-orm |
 | Jakarta EE | 10 | Namespace support | javax.* → jakarta.* |
 | MyFaces | 4.0.2 | Via myfaces-quarkus | JSF support |
@@ -100,3 +101,10 @@ For Quarkus 3.31+, using `quarkus-junit5` still works but produces a Maven reloc
 ## Version Maintenance
 Centralize Quarkus version in one place. When LTS advances, update only the BOM version.
 Versioned anchor: `<quarkus.platform.version>3.33.2</quarkus.platform.version>`
+
+## Gradle Notes
+
+- **Minimum recommended version**: Gradle 8.10+ for Quarkus 3.33.x. Gradle 8.5 has known classloader conflicts that can cause build failures.
+- **Quarkus Gradle Plugin**: `id 'io.quarkus' version '3.33.2'`
+- **BOM import**: Use `enforcedPlatform("io.quarkus.platform:quarkus-bom:3.33.2")` — the `io.quarkus.platform` groupId is required (same as Maven).
+- **Wrapper generation**: If `gradlew` is missing but `gradle/wrapper/gradle-wrapper.properties` exists, run `gradle wrapper --gradle-version=8.10` using system Gradle to regenerate the wrapper.

@@ -102,3 +102,88 @@ public class CustomerResource {
     }
 }
 ```
+
+### Qute TemplateInstance vs render()
+
+When using Qute with JAX-RS endpoints, you need the `quarkus-rest-qute` extension:
+```xml
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-rest-qute</artifactId>
+</dependency>
+```
+
+- **TemplateInstance** (returned from JAX-RS endpoint): framework renders automatically — requires `quarkus-rest-qute`
+- **render()** (manual string): call `.render()` to get the rendered String — works with plain `quarkus-qute`
+
+```java
+// TemplateInstance — framework renders (requires quarkus-rest-qute)
+@GET
+@Produces(MediaType.TEXT_HTML)
+public TemplateInstance list() {
+    return customerList.data("customers", customers);
+}
+
+// Manual render — returns String (works with plain quarkus-qute)
+public String renderEmail(Customer c) {
+    return emailTemplate.data("customer", c).render();
+}
+```
+
+### @Location for Hyphenated Template Filenames
+
+When template filenames contain hyphens (e.g., `order-confirmation.html`), the standard `@Inject Template` injection won't work (Java identifiers can't contain hyphens). Use `@Location`:
+
+```java
+@Inject
+@Location("order-confirmation")
+Template orderConfirmation;
+```
+
+**Rule**: Any template filename with characters invalid in Java identifiers (hyphens, dots) requires `@Location("filename-without-extension")`.
+
+### @ConversationScoped → Boolean State-Tracking Pattern
+
+JSF `@ConversationScoped` beans track multi-step wizard state. Since ArC doesn't support `@ConversationScoped`, use `@SessionScoped` with a boolean state-tracking field:
+
+```java
+// BEFORE: JSF @ConversationScoped wizard
+@Named
+@ConversationScoped
+public class WizardController implements Serializable {
+    @Inject Conversation conversation;
+    private String step1Data;
+    private String step2Data;
+
+    public void beginWizard() { conversation.begin(); }
+    public void endWizard() { conversation.end(); }
+}
+
+// AFTER: @SessionScoped with state-tracking field
+@Named
+@SessionScoped
+public class WizardController implements Serializable {
+    private boolean conversationActive = false;
+    private String step1Data;
+    private String step2Data;
+
+    public void beginWizard() { conversationActive = true; }
+    public void endWizard() {
+        conversationActive = false;
+        step1Data = null;
+        step2Data = null;
+    }
+    public boolean isConversationActive() { return conversationActive; }
+}
+```
+
+**Unit-test benefit**: The boolean field approach is directly testable without needing a Conversation mock:
+```java
+@Test
+void testWizardLifecycle() {
+    controller.beginWizard();
+    assertTrue(controller.isConversationActive());
+    controller.endWizard();
+    assertFalse(controller.isConversationActive());
+}
+```

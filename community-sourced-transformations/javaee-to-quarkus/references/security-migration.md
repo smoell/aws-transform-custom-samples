@@ -9,8 +9,19 @@ Document pre-existing security vulnerabilities detected during JavaEE→Quarkus 
 Generate SECURITY-NOTES.md when ANY pattern is detected during Phase 2/3 code scanning:
 - **Path Traversal**: `../`, `..\\`, URL path manipulation patterns
 - **Hardcoded Credentials**: passwords, API keys, tokens in source code
-- **Deprecated Crypto**: MD5, SHA1, DES, RC4, weak SSL/TLS configurations
+- **Deprecated Crypto**: API-boundary patterns (see detection commands below)
 - **Insecure Deserialization**: ObjectInputStream, readObject() without validation
+
+### Detection Commands for Deprecated Crypto
+
+Use API-boundary patterns to avoid false positives on common identifiers:
+```bash
+# Correct — matches cryptographic API usage only
+grep -rn 'getInstance.*"DES"\|getInstance.*"MD5"\|getInstance.*"SHA-1"\|MessageDigest\.getInstance\|Cipher\.getInstance' src/
+
+# WRONG — bare 'DES' or 'SHA1' matches field names like 'description', 'getDescription'
+# Do NOT use: grep -rn 'DES\|SHA1' src/
+```
 
 ### File Format
 ```markdown
@@ -23,12 +34,36 @@ Generate SECURITY-NOTES.md when ANY pattern is detected during Phase 2/3 code sc
 | LOW | src/main/java/com/example/HashUtil.java:8 | Deprecated crypto MD5 | Use SHA-256 |
 ```
 
+### NO_OP Case — SECURITY-NOTES.md Template
+
+When Phase 0 exits NO_OP (project is already Quarkus), SECURITY-NOTES.md MUST still be generated. All four security scans MUST execute before emitting the CLEAN template. If no vulnerabilities are detected:
+
+```markdown
+# Security Notes
+
+No pre-existing security vulnerabilities detected during migration analysis.
+
+## Scan Summary
+- Path traversal patterns: CLEAN
+- Hardcoded credentials: CLEAN
+- Deprecated cryptography: CLEAN
+- Insecure deserialization: CLEAN
+```
+
+### Provenance Field for Migrated Credentials
+
+When credentials are found in files that are deleted during migration (e.g., `*-ds.xml`, `persistence.xml`), the SECURITY-NOTES.md entry MUST include a provenance field showing origin:
+
+```markdown
+| MEDIUM | src/main/resources/application.properties:5 | Hardcoded password | Location: my-app-ds.xml (deleted during migration) → application.properties. Use @ConfigProperty + env variable |
+```
+
 ## JavaEE Security → Quarkus Security Migration
 
 ### Annotation Mapping
 | JavaEE Annotation | Quarkus Equivalent | Action |
 |---|---|---|
-| `@RolesAllowed` | `@RolesAllowed` | NO CHANGE |
+| `@RolesAllowed` | `@RolesAllowed` | NO CHANGE (import changes javax→jakarta) |
 | `@DenyAll` | `@DenyAll` | NO CHANGE |
 | `@PermitAll` | `@PermitAll` | NO CHANGE |
 | `@RunAs("role")` | Not supported | Remove, use programmatic security |
@@ -41,47 +76,53 @@ quarkus.security.users.embedded.users.alice=alice
 quarkus.security.users.embedded.roles.alice=admin,user
 ```
 
+### jboss-web.xml security-domain → Quarkus HTTP Auth
+
+`<security-domain>` in jboss-web.xml configures the **HTTP authentication realm** — it is NOT the EJB security context propagation blocker (which only applies to jboss-ejb3.xml). Map it as follows:
+
+```properties
+# application.properties
+quarkus.http.auth.basic=true
+quarkus.security.users.embedded.enabled=true
+quarkus.security.users.embedded.plain-text=true
+quarkus.security.users.embedded.users.alice=password
+quarkus.security.users.embedded.roles.alice=admin,user
+```
+
+This is a **non-blocker** migration — proceed normally.
+
 ### JASPIC Migration Pattern
 
 JASPIC `ServerAuthModule` maps to Quarkus `HttpAuthenticationMechanism` (full class rewrite). This is a transitive dependency of `quarkus-rest` — no extra pom.xml entry needed.
 
-```java
-// BEFORE: ServerAuthModule (JASPIC)
-public class CustomAuthModule implements ServerAuthModule {
-    @Override
-    public AuthStatus validateRequest(MessageInfo info, Subject clientSubject, Subject serviceSubject) {
-        // Extract credentials from request, validate, populate subject
-    }
-    // ... initialize(), getSupportedMessageTypes(), etc.
-}
+**Mandatory abstract methods**: `authenticate()` and `getChallenge()`. `getCredentialTypes()` is optional.
 
+```java
 // AFTER: HttpAuthenticationMechanism (Quarkus Security)
 @ApplicationScoped
 public class CustomAuthMechanism implements HttpAuthenticationMechanism {
     @Override
     public Uni<SecurityIdentity> authenticate(RoutingContext context, IdentityProviderManager identityProviderManager) {
-        // Extract credentials from context.request(), call identityProviderManager.authenticate()
-        String token = context.request().getHeader("Authorization");
-        if (token == null) {
-            return Uni.createFrom().nullItem(); // no credentials → skip this mechanism
+        String rawToken = context.request().getHeader("Authorization");
+        if (rawToken == null) {
+            return Uni.createFrom().nullItem();
         }
-        return identityProviderManager.authenticate(new TokenAuthenticationRequest(token));
+        TokenCredential credential = new TokenCredential(rawToken, "Bearer");
+        return identityProviderManager.authenticate(new TokenAuthenticationRequest(credential));
     }
 
     @Override
     public Uni<ChallengeData> getChallenge(RoutingContext context) {
-        // Return 401 challenge (equivalent to SEND_CONTINUE in JASPIC)
         return Uni.createFrom().item(new ChallengeData(401, "WWW-Authenticate", "Bearer"));
-    }
-
-    @Override
-    public Set<Class<? extends AuthenticationRequest>> getCredentialTypes() {
-        return Set.of(TokenAuthenticationRequest.class);
     }
 }
 ```
 
-For simpler cases (augmenting an existing identity with extra roles/attributes):
+**Key API notes**:
+- Use `TokenCredential(token, "Bearer")` — NOT the non-existent `BearerTokenCredential` class.
+- Use `new TokenAuthenticationRequest(credential)` with a `TokenCredential` argument.
+
+For simpler cases (augmenting an existing identity):
 ```java
 @ApplicationScoped
 public class CustomSecurityAugmentor implements SecurityIdentityAugmentor {

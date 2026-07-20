@@ -4,110 +4,219 @@
 
 ## @TransactionAttribute → @Transactional Mapping
 
-| EJB TransactionAttributeType | Quarkus `@Transactional` | Behavior |
-|---|---|---|
-| `REQUIRED` (default) | `@Transactional` or `@Transactional(TxType.REQUIRED)` | Join existing TX or create new one |
-| `REQUIRES_NEW` | `@Transactional(TxType.REQUIRES_NEW)` | Always create a new TX, suspend existing |
-| `MANDATORY` | `@Transactional(TxType.MANDATORY)` | Must run within existing TX, throws if none |
-| `NOT_SUPPORTED` | `@Transactional(TxType.NOT_SUPPORTED)` | Suspend existing TX, run without TX |
-| `SUPPORTS` | `@Transactional(TxType.SUPPORTS)` | Use existing TX if present, else non-transactional |
-| `NEVER` | `@Transactional(TxType.NEVER)` | Must NOT run within a TX, throws if one exists |
+| EJB TransactionAttribute | Quarkus @Transactional | Notes |
+|--------------------------|----------------------|-------|
+| REQUIRED (default) | @Transactional (or omit) | Default in both |
+| REQUIRED (method-level, when class-level @Transactional present) | REMOVE | Redundant — class-level already provides REQUIRED |
+| REQUIRES_NEW | @Transactional(REQUIRES_NEW) | |
+| MANDATORY | @Transactional(MANDATORY) | |
+| SUPPORTS | See SUPPORTS Rule below | Context-dependent |
+| NOT_SUPPORTED | @Transactional(NOT_SUPPORTED) | Suspends outer TX |
+| NEVER | @Transactional(NEVER) | |
 
 **Phase 2 validation:** `grep -rn '@TransactionAttribute' src/main/java/` must return empty after migration.
 
-### Transaction Notes
+**Class-level @Transactional guidance:** Apply class-level `@Transactional` ONLY when the original `@Stateless` bean uses EntityManager/persistence operations. Quarkus Hibernate ORM requires an active transaction for `EntityManager.find()` and `TypedQuery` operations — not just writes. Beans WITHOUT EntityManager that merely delegate to other services do NOT need @Transactional.
 
-- `@Transactional` import: `jakarta.transaction.Transactional` (NOT the Spring one); `TxType` import: `jakarta.transaction.Transactional.TxType`.
-- **Class-level `@Transactional`**: apply when the original `@Stateless` bean uses EntityManager in multiple methods (read AND write) — preserves EJB default REQUIRED semantics. Quarkus Hibernate ORM requires an active transaction for `EntityManager.find()` and `TypedQuery` operations, not just writes. Class-level applies to ALL public methods; method-level overrides it (same precedence as EJB).
-- **Rollback**: `@Transactional` rolls back on `RuntimeException` by default. For checked exceptions: `@Transactional(rollbackOn = MyCheckedException.class)`.
-- **Self-invocation**: `@Transactional` only works when called through the CDI proxy (external call). Self-calls (`this.method()`) bypass the interceptor — see Self-Invocation Gotcha below.
+---
+
+## ⚠️ BMT EXCEPTION — @TransactionManagement(BEAN)
+
+**Beans with `@TransactionManagement(TransactionManagementType.BEAN)` must NOT receive class-level `@Transactional`.** They manage their own transaction boundaries via `UserTransaction`.
+
+**Action**: Drop `@TransactionManagement(BEAN)` annotation entirely. Keep `@Inject UserTransaction`. Do NOT add `@Transactional` at class or method level.
+
+```java
+// AFTER (Quarkus) — NO @Transactional on class
+@ApplicationScoped
+public class BatchService {
+    @Inject UserTransaction utx;
+    // ... manual begin/commit/rollback
+}
+```
+
+**Detection**: `grep -rn '@TransactionManagement' src/main/java/` — if found with `BEAN`, apply BMT pattern.
+
+---
+
+## SUPPORTS Rule (Authoritative — v2.2 Rewrite)
+
+Two mutually exclusive rules based on whether the class carries class-level `@Transactional`:
+
+### Rule A: Class HAS class-level @Transactional
+
+**Every `@TransactionAttribute(SUPPORTS)` method annotation is unconditionally redundant — REMOVE it regardless of EntityManager usage.**
+
+**Rationale**: Under Hibernate ORM 6 (Quarkus 3.x), ALL EntityManager operations (including reads like `find()`, `createQuery().getResultList()`) require an active transaction. With class-level `@Transactional` (REQUIRED) in place, a transaction is always present. Adding `@Transactional(TxType.SUPPORTS)` would allow the method to run WITHOUT a transaction when called outside a TX context — which would break any EntityManager usage. Therefore SUPPORTS is both redundant (when TX present) and dangerous (when TX absent). Remove unconditionally.
+
+```java
+// BEFORE (JavaEE)
+@Stateless
+public class CatalogService {
+    @PersistenceContext private EntityManager em;
+
+    @TransactionAttribute(TransactionAttributeType.SUPPORTS)
+    public List<Product> findAll() { return em.createQuery(...).getResultList(); }
+
+    @TransactionAttribute(TransactionAttributeType.SUPPORTS)
+    public String getServiceName() { return "catalog"; }  // no EntityManager
+}
+
+// AFTER (Quarkus) — REMOVE all SUPPORTS, let class-level REQUIRED apply
+@ApplicationScoped
+@Transactional
+public class CatalogService {
+    @Inject EntityManager em;
+
+    public List<Product> findAll() { return em.createQuery(...).getResultList(); }
+
+    public String getServiceName() { return "catalog"; }
+}
+```
+
+### Rule B: Class does NOT have class-level @Transactional
+
+**Only remove `@TransactionAttribute(SUPPORTS)` when the method does NOT use EntityManager.** If the method uses EntityManager, map to `@Transactional(TxType.SUPPORTS)` — the caller is responsible for providing the transaction context.
+
+```java
+// Class WITHOUT class-level @Transactional (e.g., pure delegation bean)
+@ApplicationScoped
+public class UtilityService {
+    // Method using EntityManager → keep SUPPORTS mapping
+    @Transactional(TxType.SUPPORTS)
+    public Config loadConfig(EntityManager em) { ... }
+
+    // Method NOT using EntityManager → remove entirely (no annotation needed)
+    public String formatName(String input) { return input.trim(); }
+}
+```
+
+---
+
+## beans.xml Interceptor/Alternative Migration
+
+When `beans.xml` contains `<interceptors>`, `<alternatives>`, or `<decorators>` with non-empty content, these declarations must be migrated BEFORE deleting beans.xml:
+
+| beans.xml Element | Quarkus CDI Migration |
+|---|---|
+| `<interceptors><class>com.example.LogInterceptor</class></interceptors>` | Add `@jakarta.interceptor.Interceptor` + `@jakarta.annotation.Priority(value)` to the interceptor class |
+| `<alternatives><class>com.example.MockService</class></alternatives>` | Add `@jakarta.enterprise.inject.Alternative` + `@jakarta.annotation.Priority(value)` to the alternative class |
+| `<decorators><class>com.example.LoggingDecorator</class></decorators>` | Add `@jakarta.decorator.Decorator` + `@jakarta.annotation.Priority(value)` to the decorator class |
+
+```java
+// AFTER: self-activating via @Priority (no beans.xml needed)
+@Interceptor
+@Priority(Interceptor.Priority.APPLICATION)
+public class LogInterceptor {
+    @AroundInvoke
+    public Object log(InvocationContext ctx) throws Exception { ... }
+}
+```
+
+**Rule**: After migrating all interceptors/alternatives/decorators to use `@Priority`, delete beans.xml.
+
+---
 
 ## EJB Stereotype Mapping
 
 | EJB Annotation | Quarkus CDI Equivalent | Notes |
 |---|---|---|
-| `@Stateless` | `@ApplicationScoped` + `@Transactional` | Class-level `@Transactional` for beans using EntityManager |
+| `@Stateless` | `@ApplicationScoped` + `@Transactional` (if uses EntityManager) | Class-level `@Transactional` only for beans with persistence |
 | `@Stateful` | `@SessionScoped` | Evaluate if stateful pattern is still needed; bean MUST be `Serializable` |
 | `@Singleton` (javax.ejb) | `@ApplicationScoped` | Do NOT use `jakarta.inject.Singleton` (not a normal scope, cannot be intercepted) |
 | `@Singleton` + `@Startup` | `@ApplicationScoped` + `void onStart(@Observes StartupEvent ev)` | Startup observer replaces `@PostConstruct` eager init — see Test Compatibility below |
-| `@Singleton` + `@Lock(READ)` | `@ApplicationScoped` + `ReadWriteLock` | Manual concurrency control required (see Example 3) |
+| `@Singleton` + `@Lock(READ)` | `@ApplicationScoped` + `ReadWriteLock` | Manual concurrency control required |
 | `@MessageDriven` | See `references/jms-to-smallrye.md` | Defer to messaging migration reference |
-| `@LocalBean` / `@Local` | REMOVE | All CDI beans are "local" — no equivalent needed |
+| `@LocalBean` | REMOVE | All CDI beans are "local" — no equivalent needed |
+| `@Local` | REMOVE | No local/remote distinction in CDI |
 | `@Remote` | REMOVE — redesign to REST/gRPC | No remote interface support in Quarkus |
 | `@Remove` | REMOVE annotation only | Method becomes regular business method — see below |
+| `@Asynchronous` | Uni<T> with Mutiny worker pool | Future<T>→Uni<T>, void→Uni<Void> — see Example 4 below |
+| `@TransactionManagement(BEAN)` | DROP annotation; do NOT add @Transactional; keep `@Inject UserTransaction` | See BMT EXCEPTION above |
 
 ### @Remove (on @Stateful EJBs)
 
-`@Remove` signals the EJB container to destroy a `@Stateful` bean after the method completes. In Quarkus with `@SessionScoped`:
-
-- **Action**: Simply remove the `@Remove` annotation — the method becomes a regular business method.
-- **Do NOT** convert to `@PreDestroy` (which fires on session expiry, not after a specific business call).
-- **Lifecycle**: `@SessionScoped` bean lifecycle is managed by HTTP session expiry. When the session times out, the bean is destroyed.
-
-```java
-// BEFORE                          // AFTER
-@Stateful                          @SessionScoped
-public class ShoppingCart {        public class ShoppingCart implements Serializable {
-    @Remove                            public void checkout() {
-    public void checkout() { ... }         // bean lives until HTTP session expires
-}                                      }
-                                   }
-```
+- **Action**: Simply remove the `@Remove` annotation. The method becomes a regular business method.
+- **Do NOT** convert to `@PreDestroy`. `@PreDestroy` fires on bean destruction (session expiry), not after a specific business call.
 
 ### @PostConstruct → StartupEvent: Test Compatibility Pattern
 
-When migrating `@Singleton` + `@Startup` + `@PostConstruct`, **keep the original `init()` method name and visibility unchanged**. Add `onStart(@Observes StartupEvent ev)` as a delegator that calls `init()`. This preserves unit-test compatibility — tests call `bean.init()` directly without a `StartupEvent`.
+When migrating `@Singleton` + `@Startup` + `@PostConstruct` to Quarkus, **keep the original `init()` method name and visibility unchanged**. Add `onStart(@Observes StartupEvent ev)` as a delegator that calls `init()`.
 
 ```java
-// AFTER (Quarkus) — keep init() as-is, add delegator
+// AFTER (Quarkus) — CORRECT: keep init() as-is, add delegator
 @ApplicationScoped
 public class ConfigCache {
-    // Remove @PostConstruct — StartupEvent observer triggers init
-    public void init() {          // name and visibility preserved for tests
+    public void init() {  // name and visibility preserved for tests
         cache = loadFromDatabase();
     }
+
     void onStart(@Observes StartupEvent ev) {
-        init();                   // delegator — tests call init() directly
+        init();  // delegator — tests call init() directly
     }
 }
 ```
 
 **Rules:**
-1. **Keep `init()` method name** — renaming to `onStart()` breaks all unit-test `setUp()` methods that call `init()`.
-2. **Remove `@PostConstruct`** from `init()` — rely solely on the StartupEvent observer.
-3. **If `@PostConstruct` is retained alongside `onStart()`**, both fire on startup (double-invocation). Acceptable ONLY if `init()` is idempotent; otherwise remove `@PostConstruct`.
-4. **Unit tests**: call `bean.init()` directly — no `StartupEvent` parameter needed.
+1. **Keep `init()` method name** — do NOT rename. Renaming breaks unit test setUp() methods.
+2. **Remove `@PostConstruct` annotation** from `init()` — do NOT migrate to `jakarta.annotation.PostConstruct`. This supersedes the generic javax→jakarta namespace rule.
+3. **If both retained**, both fire on startup (double-invocation). Remove `@PostConstruct` unless init() is idempotent.
 
 ### @Schedules (Plural) → Multiple @Scheduled Methods
 
-EJB `@Schedules({@Schedule(...), @Schedule(...)})` combines multiple cron expressions on one method. Quarkus `@Scheduled` accepts only ONE cron/every expression per annotation ([Quarkus Scheduler Reference](https://quarkus.io/guides/scheduler-reference)). Extract the body to a private helper, then create N `@Scheduled` methods each calling the helper:
+EJB `@Schedules({@Schedule(...), @Schedule(...)})` → extract body to private helper, create N `@Scheduled` methods each calling the helper:
 
 ```java
-// BEFORE                                       // AFTER
-@Schedules({                                    @Scheduled(cron = "0 0 9 ? * MON")
-    @Schedule(dayOfWeek = "Mon", hour = "9"),   void weeklyStartReport() { doWeeklyReport(); }
-    @Schedule(dayOfWeek = "Fri", hour = "17")
-})                                              @Scheduled(cron = "0 0 17 ? * FRI")
-public void weeklyBoundaryReport(Timer t) {     void weeklyEndReport() { doWeeklyReport(); }
-    generateWeeklyReport();
-}                                               private void doWeeklyReport() { generateWeeklyReport(); }
+// AFTER (Quarkus)
+@Scheduled(cron = "0 0 9 ? * MON")
+void weeklyStartReport() { doWeeklyBoundaryReport(); }
+
+@Scheduled(cron = "0 0 17 ? * FRI")
+void weeklyEndReport() { doWeeklyBoundaryReport(); }
+
+private void doWeeklyBoundaryReport() { generateWeeklyReport(); }
 ```
+
+### EE Concurrency: ContextService.createContextualProxy() Removal
+
+- **Action**: Remove the `createContextualProxy()` call entirely. `ManagedExecutor` in Quarkus propagates context automatically.
+- **Detection**: `grep -rn 'createContextualProxy\|ContextService' src/main/java/`
 
 ### @Stateful Caveats
 
-- **Serialization**: `@SessionScoped` beans MUST implement `Serializable`; all injected fields must be Serializable too.
-- **ArC proxy**: normal-scoped beans require a no-arg constructor (can be package-private).
-- **Cloud-native**: stateful beans are problematic for horizontal scaling. Prefer externalizing state to Redis/database with `@ApplicationScoped` stateless beans.
-- **@PrePassivate / @PostActivate**: DELETE entirely — no Quarkus equivalent for stateful passivation/activation.
+- **Serialization**: `@SessionScoped` beans MUST implement `Serializable` for HTTP session serialization.
+- **ArC proxy requirement**: normal-scoped beans require no-arg constructor (can be package-private).
+- **Cloud-native**: Prefer externalizing state to Redis/database and using `@ApplicationScoped` stateless beans.
+- **@PrePassivate / @PostActivate**: DELETE entirely — no Quarkus equivalent.
+
+## Transaction Attribute Mapping
+
+| EJB TransactionAttributeType | Quarkus Equivalent | Behavior |
+|---|---|---|
+| `REQUIRED` (default) | `@Transactional` or `@Transactional(TxType.REQUIRED)` | Join existing TX or create new one |
+| `REQUIRES_NEW` | `@Transactional(TxType.REQUIRES_NEW)` | Always create a new TX, suspend existing |
+| `MANDATORY` | `@Transactional(TxType.MANDATORY)` | Must run within existing TX, throws if none |
+| `NOT_SUPPORTED` | `@Transactional(TxType.NOT_SUPPORTED)` | Suspend existing TX, run without TX |
+| `SUPPORTS` | `@Transactional(TxType.SUPPORTS)` | Use existing TX if present, otherwise non-transactional |
+| `NEVER` | `@Transactional(TxType.NEVER)` | Must NOT run within a TX, throws if one exists |
+
+### Transaction Notes
+
+- `@Transactional` import: `jakarta.transaction.Transactional` (NOT `org.springframework.transaction.annotation.Transactional`)
+- `TxType` import: `jakarta.transaction.Transactional.TxType`
+- Class-level `@Transactional` applies to ALL public methods (same as EJB `@Stateless` default `REQUIRED`)
+- Method-level `@Transactional` overrides class-level (same precedence as EJB)
+- **Rollback behavior**: `@Transactional` rolls back on `RuntimeException` by default. For checked exceptions: `@Transactional(rollbackOn = MyCheckedException.class)`
+- **Self-invocation**: `@Transactional` only works through CDI proxy (external call). Self-calls bypass interceptor. Use separate bean or `Arc.container().instance(MyBean.class).get().method()`.
 
 ## Injection Migration
 
 | EJB Pattern | Quarkus CDI Equivalent | Notes |
 |---|---|---|
 | `@EJB private MyService svc;` | `@Inject MyService svc;` | Simple replacement |
-| `@EJB(beanName="orderSvc")` | `@Inject @Named("orderSvc") MyService svc;` | Add `@Named` on target bean class |
+| `@EJB(beanName="orderSvc")` | `@Inject @Named("orderSvc") MyService svc;` | Add `@Named("orderSvc")` on target bean |
 | `@EJB(lookup="java:global/...")` | `@Inject MyService svc;` | Remove JNDI lookup — CDI discovers by type |
-| `@EJB(lookup="...")` with ambiguity | `@Inject @MyQualifier MyService svc;` | Create custom `@Qualifier` to disambiguate |
+| `@EJB(lookup="...")` with ambiguity | `@Inject @MyQualifier MyService svc;` | Create custom `@Qualifier` |
 | `@Resource SessionContext ctx` | `@Inject SecurityContext ctx;` | See security migration reference |
 | `@Resource TimerService ts` | `@Inject Scheduler scheduler;` | Quarkus scheduler API |
 | `@Resource(lookup="java:comp/env/...")` | `@ConfigProperty(name="key")` | Config property injection |
@@ -118,7 +227,8 @@ public void weeklyBoundaryReport(Timer t) {     void weeklyEndReport() { doWeekl
 @ApplicationScoped
 public class OrderService {
     private final InventoryService inventoryService;
-    OrderService() {}  // package-private no-arg constructor for ArC proxy
+
+    OrderService() {} // package-private no-arg constructor for ArC proxy
 
     @Inject
     public OrderService(InventoryService inventoryService) {
@@ -126,8 +236,6 @@ public class OrderService {
     }
 }
 ```
-
-**Note**: If the bean has only ONE constructor, `@Inject` on it is optional — ArC infers it.
 
 ## Worked Examples
 
@@ -146,17 +254,14 @@ public class OrderService {
         em.persist(order);
         return order;
     }
-    public Order findById(Long id) { return em.find(Order.class, id); }
 }
 
 // AFTER (Quarkus)
 @ApplicationScoped
-@Transactional  // class-level — all methods run in a transaction (read AND write)
+@Transactional  // class-level — bean uses EntityManager
 public class OrderService {
     @Inject EntityManager em;
-    private final InventoryService inventoryService;
-    OrderService() {}
-    @Inject public OrderService(InventoryService inv) { this.inventoryService = inv; }
+    @Inject InventoryService inventoryService;
 
     public Order createOrder(OrderRequest request) {
         inventoryService.reserve(request.getItemId(), request.getQuantity());
@@ -164,42 +269,51 @@ public class OrderService {
         em.persist(order);
         return order;
     }
-    public Order findById(Long id) { return em.find(Order.class, id); }
 }
 ```
 
-### Example 2: Method-Level @TransactionAttribute
+### Example 2: @Stateless with Method-Level @TransactionAttribute
 
 ```java
-// BEFORE: @Stateless with mixed transaction attributes
+// BEFORE (JavaEE)
 @Stateless
 public class PaymentService {
-    public void processPayment(Payment p) { /* default REQUIRED */ }
+    @EJB private AuditService auditService;
+
+    public void processPayment(Payment payment) { /* payment logic */ }
 
     @TransactionAttribute(TransactionAttributeType.REQUIRES_NEW)
-    public void recordAudit(String action, String details) { auditService.log(action, details); }
+    public void recordAudit(String action, String details) {
+        auditService.log(action, details);
+    }
 
     @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)
-    public PaymentStatus checkExternalStatus(String ref) { return externalGateway.getStatus(ref); }
+    public PaymentStatus checkExternalStatus(String paymentRef) {
+        return externalGateway.getStatus(paymentRef);
+    }
 }
 
-// AFTER
+// AFTER (Quarkus)
 @ApplicationScoped
 @Transactional  // default REQUIRED for all methods
 public class PaymentService {
-    public void processPayment(Payment p) { /* inherits class-level REQUIRED */ }
+    @Inject AuditService auditService;
+
+    public void processPayment(Payment payment) { /* payment logic */ }
 
     @Transactional(TxType.REQUIRES_NEW)
-    public void recordAudit(String action, String details) { auditService.log(action, details); }
+    public void recordAudit(String action, String details) {
+        auditService.log(action, details);
+    }
 
     @Transactional(TxType.NOT_SUPPORTED)
-    public PaymentStatus checkExternalStatus(String ref) { return externalGateway.getStatus(ref); }
+    public PaymentStatus checkExternalStatus(String paymentRef) {
+        return externalGateway.getStatus(paymentRef);
+    }
 }
 ```
 
 ### Example 3: @Singleton with @Lock(READ/WRITE) → ReadWriteLock
-
-`@Lock` has no ArC equivalent — replace with `java.util.concurrent.locks.ReadWriteLock`:
 
 ```java
 // AFTER (Quarkus)
@@ -208,16 +322,14 @@ public class ConfigCache {
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
     private Map<String, String> cache;
 
-    void onStart(@Observes StartupEvent ev) { cache = loadFromDatabase(); }
+    public void init() { cache = loadFromDatabase(); }
+    void onStart(@Observes StartupEvent ev) { init(); }
 
     public String getValue(String key) {
         lock.readLock().lock();
         try { return cache.get(key); } finally { lock.readLock().unlock(); }
     }
-    public void setValue(String key, String value) {
-        lock.writeLock().lock();
-        try { cache.put(key, value); } finally { lock.writeLock().unlock(); }
-    }
+
     public void refresh() {
         lock.writeLock().lock();
         try { cache = loadFromDatabase(); } finally { lock.writeLock().unlock(); }
@@ -225,14 +337,20 @@ public class ConfigCache {
 }
 ```
 
-**Lock ordering**: keep `init()`/refresh helper lock-free; all locking lives in the public API methods (a non-reentrant `ReadWriteLock` would deadlock if `init()` re-acquired). For `@Singleton` with NO `@Lock` (ConcurrencyManagement.BEAN), just use `@ApplicationScoped` with no lock — beans are not thread-safe by default.
-
-### Example 4: @Asynchronous Method → CompletionStage/Uni
+### Example 4: @Asynchronous Method → Uni<T>
 
 ```java
-// BEFORE: @Asynchronous Future<String> / void fire-and-forget
+// BEFORE (JavaEE)
+@Stateless
+public class NotificationService {
+    @Asynchronous
+    public Future<String> sendEmail(String to, String subject, String body) {
+        String messageId = emailGateway.send(to, subject, body);
+        return new AsyncResult<>(messageId);
+    }
+}
 
-// AFTER — Option A: Mutiny Uni
+// AFTER (Quarkus — Mutiny Uni)
 @ApplicationScoped
 public class NotificationService {
     public Uni<String> sendEmail(String to, String subject, String body) {
@@ -240,20 +358,9 @@ public class NotificationService {
             .runSubscriptionOn(Infrastructure.getDefaultWorkerPool());
     }
 }
-
-// AFTER — Option B: CompletionStage with ManagedExecutor
-@ApplicationScoped
-public class NotificationService {
-    @Inject ManagedExecutor executor;
-    public CompletionStage<String> sendEmail(String to, String subject, String body) {
-        return executor.supplyAsync(() -> emailGateway.send(to, subject, body));
-    }
-}
 ```
 
-**CRITICAL**: If the async method accesses `@RequestScoped` beans, annotate it with `@ActivateRequestContext` — ArC does not propagate request context to worker threads automatically.
-
-**Cross-task dependency**: When converting `Future<T>` → `Uni<T>`, scan all callers for `Future<T>` declarations. Callers must be updated in the same task or scheduled AFTER the callee task.
+**CRITICAL**: Mutiny Uni is lazy — calling without `.subscribe()` or `.await()` is a no-op. Update ALL callers.
 
 ### Example 5: EJB Timer (@Schedule) → Quarkus @Scheduled
 
@@ -261,109 +368,66 @@ public class NotificationService {
 // AFTER (Quarkus)
 @ApplicationScoped
 public class ReportScheduler {
-    @Scheduled(cron = "0 0 2 * * ?")   // daily at 2:00 AM
+    @Scheduled(cron = "0 0 2 * * ?")
     public void dailyReport() { generateDailyReport(); }
-
-    @Scheduled(every = "15m")          // every 15 minutes
-    public void healthCheck() { checkSystemHealth(); }
-
-    @Scheduled(cron = "0 0 9 ? * MON") // @Schedules split into separate methods
-    public void weeklyStartReport() { generateWeeklyReport(); }
-    @Scheduled(cron = "0 0 17 ? * FRI")
-    public void weeklyEndReport() { generateWeeklyReport(); }
 }
 ```
 
-**Notes**: Remove the `Timer` parameter (Quarkus does not pass timer info). Remove `persistent = false` (Quarkus scheduled tasks are non-persistent by default). Cron format is Quartz-style `second minute hour dayOfMonth month dayOfWeek`. Add the `quarkus-scheduler` extension.
-
-### Example 6: @ApplicationException → @Transactional rollbackOn + ExceptionMapper
+### Example 6: @ApplicationException → ExceptionMapper
 
 ```java
-// Exception class: DELETE the @ApplicationException annotation (no Quarkus equivalent)
-public class InsufficientFundsException extends Exception { /* fields, ctor, getters */ }
-
-// Service — rollback=true equivalent declared on @Transactional
-@ApplicationScoped
-public class AccountService {
-    @Inject EntityManager em;
-
-    @Transactional(rollbackOn = InsufficientFundsException.class)
-    public void withdraw(Long accountId, BigDecimal amount) throws InsufficientFundsException {
-        Account account = em.find(Account.class, accountId);
-        if (account.getBalance().compareTo(amount) < 0)
-            throw new InsufficientFundsException(account.getBalance(), amount);
-        account.debit(amount);
-    }
-}
-
-// JAX-RS ExceptionMapper — maps exception to HTTP response
-@Provider
-public class InsufficientFundsExceptionMapper implements ExceptionMapper<InsufficientFundsException> {
-    @Override
-    public Response toResponse(InsufficientFundsException e) {
-        return Response.status(Response.Status.CONFLICT)
-            .entity(Map.of("error", "INSUFFICIENT_FUNDS",
-                           "balance", e.getBalance(), "requested", e.getAmount()))
-            .build();
-    }
-}
+// BEFORE: @ApplicationException(rollback = true)
+// AFTER: @Transactional(rollbackOn = MyException.class) on throwing method
+//        + @Provider ExceptionMapper for HTTP response mapping
+//        DELETE @ApplicationException annotation from exception class
 ```
 
-**@ApplicationException mapping rules**:
-- `rollback = true` → `@Transactional(rollbackOn = MyException.class)` on the throwing method
-- `rollback = false` (default) → `@Transactional(dontRollbackOn = MyException.class)`, or simply remove annotation
-- `inherited = true` (default) → apply to all methods that throw the exception or subclasses
-- The exception class itself: DELETE `@ApplicationException` — no CDI/Quarkus equivalent
-
 ## ArC-Specific Caveats
-
-### What Works Fine
-
-`@PostConstruct`, `@PreDestroy` (normal scopes), `@Inject` (field/constructor/setter), `@Produces`/`@Disposes`, `@Interceptor`/`@InterceptorBinding` (use `@Priority` for ordering — beans.xml `<alternatives>`/`<interceptors>` NOT read), `@Observes`/`@ObservesAsync`, `@Alternative` + `@Priority`, `@Vetoed`, `@Transactional` — all fully supported.
-
-### What Requires Attention
 
 | Feature | Status | Workaround |
 |---|---|---|
 | `@PreDestroy` on `@Dependent` | ⚠ Not guaranteed | Use `@ApplicationScoped` or explicit cleanup |
-| `@LocalBean` | ❌ Not needed | Remove — all CDI beans are "local" |
-| Remote interfaces (`@Remote`) | ❌ Not supported | Redesign to REST (`quarkus-rest`) or gRPC (`quarkus-grpc`) |
-| `@Lock(READ/WRITE)` | ❌ No equivalent | Use `ReadWriteLock` manually (Example 3) |
-| `@AccessTimeout` | ❌ No equivalent | Implement timeout logic manually or reactive `@Timeout` |
-| `@ConcurrencyManagement(CONTAINER)` | ❌ No equivalent | CDI beans not thread-safe by default — add manual synchronization |
-| `@DependsOn` | ❌ No equivalent | Use `@Observes StartupEvent` with `@Priority` for ordering |
-| Bean-managed transactions (BMT) | ⚠ Possible | Inject `UserTransaction` or use `QuarkusTransaction.begin()/commit()` |
-| `@RunAs` | ❌ No direct equivalent | Use `SecurityIdentityAugmentor` — see security reference |
-| `@Remove` | ❌ No equivalent | Remove annotation — method becomes regular business method |
-
-### Constructor Injection & Native Image
-
-Constructor injection is preferred (testability, immutability, reliable native-image handling). Normal-scoped beans (`@ApplicationScoped`, `@RequestScoped`, `@SessionScoped`) **require a no-arg constructor** (package-private is fine) for ArC proxy generation. `@Dependent` beans do not (no proxy). For Kotlin, use the `kotlin-noarg` compiler plugin for normal scopes.
+| Remote interfaces (`@Remote`) | ❌ Not supported | Redesign to REST or gRPC |
+| `@Lock(READ/WRITE)` | ❌ No equivalent | Use `ReadWriteLock` manually |
+| `@AccessTimeout` | ❌ No equivalent | Implement timeout manually |
+| `@ConcurrencyManagement(CONTAINER)` | ❌ No equivalent | Add manual synchronization |
+| `@DependsOn` | ❌ No equivalent | Use `@Observes StartupEvent` + `@Priority` |
+| `@RunAs` | ❌ No equivalent | Use `SecurityIdentityAugmentor` |
 
 ### Self-Invocation Gotcha
 
-In EJB the container intercepts ALL calls including self-calls. In CDI, interceptors (`@Transactional`, custom) only apply through the **proxy** (external call):
+In CDI, interceptors (`@Transactional`) only apply through the **proxy** (external call). Self-calls bypass. Solutions:
+1. Extract method to separate bean (preferred)
+2. Use `Arc.container().instance(MyBean.class).get().method()`
 
-```java
-@ApplicationScoped
-@Transactional
-public class OrderService {
-    public void createOrder(OrderRequest req) { doCreate(req); }  // proxied — TX applied
+## Updating Call Sites of Migrated @Asynchronous Methods (Uni Caller-Side)
 
-    @Transactional(TxType.REQUIRES_NEW)
-    public void doCreate(OrderRequest req) {
-        // WARNING: when called via self-invocation from createOrder(),
-        // REQUIRES_NEW is IGNORED — uses the existing transaction
-    }
-}
-```
-
-**Solutions**: (1) extract the method to a separate bean (preferred), (2) `Arc.container().instance(MyBean.class).get().method()`, or (3) inject `Instance<MyBean>` and call through it.
+After migrating `@Asynchronous` methods from `Future<T>` to `Uni<T>`, ALL callers must be updated:
+- Fire-and-forget: add `.subscribe().with(v -> {}, e -> LOG.warn(...))` 
+- Blocking: `.await().indefinitely()` (caller must be `@Blocking`)
+- JAX-RS endpoint returning Uni: framework subscribes automatically
 
 ## @ConversationScoped → @SessionScoped Fallback
+Quarkus ArC does NOT support @ConversationScoped. Use @SessionScoped as fallback with `implements Serializable`.
 
-Quarkus ArC does NOT support `@ConversationScoped`. Use `@SessionScoped` as fallback: bean must implement `Serializable`, all injected fields Serializable. State is isolated per HTTP session. For fine-grained conversation control use `@ViewScoped` (JSF) or explicit client-side state.
+## Edge Cases — Additional Rules
 
-## @Stateful EJB — Non-HTTP Client Warning
+### @Resource → @ConfigProperty — Preserve Integer Wrapper Type
 
-`@Stateful` → `@SessionScoped` works for HTTP-triggered flows only. For remote callers, scheduled jobs, or background processes: use `@ApplicationScoped` + explicit state map, or a request-scoped correlation ID. Do NOT use `@SessionScoped` for non-HTTP scenarios.
+When converting `@Resource` to `@ConfigProperty`, preserve wrapper types (`Integer` not `int`) for null-check and Mockito compatibility.
+
+### @Singleton + @Startup: StartupEvent OVERRIDES @PostConstruct
+
+Migration order: (1) Remove `@PostConstruct`; (2) Add `void onStart(@Observes StartupEvent ev) { init(); }`. Do NOT also migrate @PostConstruct to jakarta — it should be gone entirely.
+
+### Orphaned Import Cleanup After JNDI Block Deletion
+
+After deleting JNDI init blocks, check ALL imports at file top. Delete orphaned imports (InitialContext, NamingException, PostConstruct if method deleted).
+
+### CDI Self-Invocation Proxy Bypass for @TransactionAttribute
+
+When a method annotated `REQUIRES_NEW` or `NOT_SUPPORTED` is called via `this.method()`, extract to separate bean to ensure proxy invocation.
+
+### ContextService.createContextualProxy() — ALL Sites Must Be Removed
+
+Detection: `grep -rn 'createContextualProxy' src/main/java/`. Remove each proxy wrapping while preserving task submission logic.

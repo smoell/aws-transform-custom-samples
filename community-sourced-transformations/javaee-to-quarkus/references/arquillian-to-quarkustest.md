@@ -3,33 +3,37 @@
 > Reference for Phase 4 Step 16: Test framework migration.
 > See also: https://quarkus.io/guides/getting-started-testing
 
+Sections: Dependencies · Annotation Mapping · (1) Integration Test · (2) REST API Test · (3) @TestTransaction · (4) @InjectMock · (5) @TestProfile · (6) TestContainers · (7) Native Mode · (8) Continuous Testing · (9) MockitoExtension Strict Stubbing · (10) Assertion Arg Order · (11) assertThrows Isolation · (12) @ConfigProperty in Unit Tests · (13) @TestSecurity Class-Level · (14) REQUIRES_NEW Isolation · (15) H2 Test Datasource · (16) Uni Mock NPE · (17) Effectively-Final in assertThrows · (18) Mixed @Test(expected)+try/catch · (19) Qute Mock Chain · (20) Dual root/rest Path · (21) Empty @BeforeEach · (22) *IT→*Test Rename · (23) All-@Inject Audit · (24) @BeforeEach Config Audit · (25) Generic Mock Type · Migration Checklist · JUnit 4→5 Quick Reference
+
+---
+
 ## Dependencies
 
-Remove Arquillian dependencies and add Quarkus test dependencies:
-
 ```xml
-<!-- REMOVE all of these -->
+<!-- REMOVE -->
 <dependency><groupId>org.jboss.arquillian</groupId><artifactId>arquillian-bom</artifactId></dependency>
 <dependency><groupId>org.jboss.arquillian.junit</groupId><artifactId>arquillian-junit-container</artifactId></dependency>
 <dependency><groupId>org.jboss.arquillian.container</groupId><artifactId>arquillian-weld-ee-embedded-1.1</artifactId></dependency>
 <dependency><groupId>org.jboss.shrinkwrap</groupId><artifactId>shrinkwrap-api</artifactId></dependency>
 <dependency><groupId>org.jboss.shrinkwrap.resolver</groupId><artifactId>shrinkwrap-resolver-impl-maven</artifactId></dependency>
 
-<!-- ADD these -->
-<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-junit5</artifactId><scope>test</scope></dependency>
+<!-- ADD (all BOM-managed — no explicit <version>) -->
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-junit</artifactId><scope>test</scope></dependency><!-- use quarkus-junit, NOT quarkus-junit5 (deprecated since 3.31) -->
 <dependency><groupId>io.rest-assured</groupId><artifactId>rest-assured</artifactId><scope>test</scope></dependency>
-<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-junit5-mockito</artifactId><scope>test</scope></dependency>
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-junit-mockito</artifactId><scope>test</scope></dependency>
 ```
 
-Also delete: `arquillian.xml`, `test-ds.xml`, and any Arquillian container adapter JARs.
+Also delete: `arquillian.xml`, `test-ds.xml`, Arquillian container adapter JARs.
+
+**Mockito BOM status (Quarkus 3.33.2+):** Both `mockito-core` and `mockito-junit-jupiter` are BOM-managed. Omit explicit `<version>` — specifying one causes downgrade conflicts. Verify: `mvn dependency:resolve | grep mockito`.
 
 ## Annotation Mapping
 
 | Arquillian | Quarkus | Notes |
 |---|---|---|
-| `@RunWith(Arquillian.class)` | `@QuarkusTest` | Class-level annotation; JUnit 5 only |
+| `@RunWith(Arquillian.class)` | `@QuarkusTest` | Class-level; JUnit 5 only |
 | `@Deployment` + `ShrinkWrap` | REMOVE entirely | Quarkus manages full app lifecycle |
-| `@Inject` in test | `@Inject` in test | Works natively — no special setup |
+| `@Inject` in test | `@Inject` in test | Works natively |
 | `@ArquillianResource URL` | `@TestHTTPResource` | Injects test server URL |
 | `@RunAsClient` | Default behavior | `@QuarkusTest` runs as client by default |
 | `@InSequence(n)` | `@TestMethodOrder(OrderAnnotation.class)` + `@Order(n)` | JUnit 5 ordering |
@@ -37,56 +41,13 @@ Also delete: `arquillian.xml`, `test-ds.xml`, and any Arquillian container adapt
 
 ---
 
-## 1. Typical Integration Test — Before/After
-
-### Before (Arquillian)
+## 1. Typical Integration Test
 
 ```java
-import org.jboss.arquillian.container.test.api.Deployment;
-import org.jboss.arquillian.junit.Arquillian;
-import org.jboss.shrinkwrap.api.ShrinkWrap;
-import org.jboss.shrinkwrap.api.spec.WebArchive;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import javax.inject.Inject;
-import static org.junit.Assert.*;
-
-@RunWith(Arquillian.class)
-public class OrderServiceIT {
-
-    @Deployment
-    public static WebArchive createDeployment() {
-        return ShrinkWrap.create(WebArchive.class, "test.war")
-            .addPackages(true, "com.example.orders")
-            .addAsResource("META-INF/persistence.xml")
-            .addAsResource("test-data.sql", "import.sql");
-    }
-
-    @Inject
-    private OrderService orderService;
-
-    @Test
-    public void testCreateOrder() {
-        Order order = orderService.createOrder(new OrderRequest("item-1", 2));
-        assertNotNull(order);
-        assertEquals("PENDING", order.getStatus());
-    }
-}
-```
-
-### After (Quarkus)
-
-```java
-import io.quarkus.test.junit.QuarkusTest;
-import jakarta.inject.Inject;
-import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
-
+// BEFORE (Arquillian): @RunWith(Arquillian.class) + @Deployment ShrinkWrap.create(...) + @Inject
+// AFTER (Quarkus):
 @QuarkusTest
-public class OrderServiceIT {
-
-    // No @Deployment needed — Quarkus boots the full application
-
+public class OrderServiceTest {  // renamed from *IT — see Section 22
     @Inject
     OrderService orderService;
 
@@ -99,454 +60,321 @@ public class OrderServiceIT {
 }
 ```
 
-**Key changes**:
-- `@RunWith(Arquillian.class)` → `@QuarkusTest`; delete `@Deployment` method entirely
-- `org.junit.Test` → `org.junit.jupiter.api.Test`; `Assert.*` → `Assertions.*`
-- Test data: move `import.sql` to `src/test/resources/import.sql`
+**Key changes**: `@RunWith(Arquillian.class)` → `@QuarkusTest`; delete `@Deployment`; `org.junit.Test` → `org.junit.jupiter.api.Test`; `Assert.*` → `Assertions.*`; rename `*IT.java` → `*Test.java`.
 
----
-
-## 2. REST API Test — Before/After
-
-### Before (Arquillian + JAX-RS Client)
+## 2. REST API Test (REST Assured)
 
 ```java
-@RunWith(Arquillian.class)
-@RunAsClient
-public class OrderResourceIT {
-    @Deployment(testable = false)
-    public static WebArchive createDeployment() {
-        return ShrinkWrap.create(WebArchive.class).addPackages(true, "com.example");
-    }
-
-    @ArquillianResource
-    private URL deploymentUrl;
-
-    @Test
-    public void testGetOrder() {
-        Client client = ClientBuilder.newClient();
-        Response response = client.target(deploymentUrl.toURI())
-            .path("/api/orders/1").request(MediaType.APPLICATION_JSON).get();
-        assertEquals(200, response.getStatus());
-        client.close();
-    }
-}
-```
-
-### After (Quarkus + REST Assured)
-
-```java
-import io.quarkus.test.junit.QuarkusTest;
-import org.junit.jupiter.api.Test;
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
-
 @QuarkusTest
-public class OrderResourceIT {
-
-    // No @Deployment, no @ArquillianResource URL, no JAX-RS Client boilerplate
-
+public class OrderResourceTest {
     @Test
     public void testGetOrder() {
         given().when().get("/api/orders/1")
-            .then().statusCode(200)
-            .body("id", equalTo(1)).body("status", notNullValue());
-    }
-
-    @Test
-    public void testCreateOrder() {
-        given().contentType("application/json")
-            .body("""{"itemId": "item-1", "quantity": 2}""")
-            .when().post("/api/orders")
-            .then().statusCode(201).body("id", notNullValue());
-    }
-
-    @Test
-    public void testNotFound() {
-        given().when().get("/api/orders/99999").then().statusCode(404);
+            .then().statusCode(200).body("id", equalTo(1));
     }
 }
 ```
 
-**Key changes**: No URL management — REST Assured auto-configures base URL. Fluent assertion API replaces manual Response parsing. `@TestHTTPEndpoint(OrderResource.class)` can set base path per test class.
-
-**Path configuration with root-path** (confirmed by [Quarkus GitHub #28001](https://github.com/quarkusio/quarkus/issues/28001)): When `quarkus.http.root-path=/myapp` is set, Quarkus auto-configures `RestAssured.basePath=/myapp`. Test request paths must be relative to root-path — include the REST path but NOT root-path. Example: with `root-path=/app` and `rest.path=/api`, use `.post("/api/orders")`, not `.post("/app/api/orders")`.
-
-For non-application-root-path endpoints (e.g., `/q/health`), use `@TestHTTPResource("/q/health")` URL injection and pass the URL to `RestAssured.get(url)` to bypass basePath:
-
-```java
-@TestHTTPResource("/q/health")
-URL healthUrl;
-
-@Test
-void testHealthEndpoint() {
-    RestAssured.get(healthUrl).then().statusCode(200);
-}
-```
-
----
+No `@Deployment`, no `@ArquillianResource URL`, no JAX-RS Client boilerplate. When `quarkus.http.root-path` is set, REST Assured base URL auto-includes it — do NOT add root-path manually (see Section 20).
 
 ## 3. Database Test — @TestTransaction
 
-Arquillian tests that loaded data via `@Deployment` + `test-data.sql` migrate to one of two patterns.
-
-### Option 1: @TestTransaction (rolled back after each test)
-
 ```java
-import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.TestTransaction;
-import jakarta.inject.Inject;
-import jakarta.persistence.EntityManager;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
-
 @QuarkusTest
-@TestTransaction  // each test runs in a TX that is rolled back after
-public class OrderRepositoryIT {
-
-    @Inject
-    EntityManager em;
+@TestTransaction  // each test's TX rolled back after
+public class OrderRepositoryTest {
+    @Inject EntityManager em;
 
     @BeforeEach
-    public void setupData() {
-        // Inserted data is rolled back after each test
-        em.persist(new Order("order-1", "ACTIVE"));
-        em.persist(new Order("order-2", "ACTIVE"));
-        em.persist(new Order("order-3", "ACTIVE"));
-        em.flush();
-    }
+    public void setupData() { em.persist(new Order("order-1", "ACTIVE")); em.flush(); }
 
     @Test
     public void testFindByStatus() {
         List<Order> orders = em.createQuery(
             "SELECT o FROM Order o WHERE o.status = :status", Order.class)
             .setParameter("status", "ACTIVE").getResultList();
-        assertEquals(3, orders.size());
+        assertEquals(1, orders.size());
     }
 }
 ```
 
-### Option 2: import.sql for static test data
-
-```properties
-# src/test/resources/application.properties
-quarkus.datasource.db-kind=h2
-quarkus.datasource.jdbc.url=jdbc:h2:mem:testdb
-quarkus.hibernate-orm.database.generation=drop-and-create
-quarkus.hibernate-orm.sql-load-script=import.sql
-```
-
-Place static INSERTs in `src/test/resources/import.sql`.
-
----
+Alternative: static `import.sql` in `src/test/resources/` with `schema-management.strategy=drop-and-create`.
 
 ## 4. Mocking — @InjectMock
 
-Replaces Arquillian manual `@Alternative` mocks registered in `beans.xml`.
-
 ```java
-import io.quarkus.test.junit.QuarkusTest;
-import io.quarkus.test.InjectMock;
-import org.junit.jupiter.api.Test;
-import static org.mockito.Mockito.*;
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
-
 @QuarkusTest
-public class OrderResourceIT {
-
-    @InjectMock  // replaces the real CDI bean with a Mockito mock
-    PaymentService paymentService;
+public class OrderResourceTest {
+    @InjectMock PaymentService paymentService;
 
     @Test
-    public void testCreateOrderWithPaymentFailure() {
+    public void testPaymentFailure() {
         when(paymentService.charge(any())).thenThrow(new PaymentException("Declined"));
-        given().contentType("application/json")
-            .body("""{"itemId": "item-1", "quantity": 1}""")
-            .when().post("/api/orders")
-            .then().statusCode(402).body("error", equalTo("PAYMENT_DECLINED"));
+        given().contentType("application/json").body("""{"itemId":"item-1","quantity":1}""")
+            .when().post("/api/orders").then().statusCode(402);
         verify(paymentService).charge(any());
     }
 }
 ```
 
-**Notes**:
-- `@InjectMock` replaces the real CDI bean for the entire test class; mocks reset between tests automatically.
-- For partial mock (real bean with spy capabilities): use `@InjectSpy` — then `verify(bean).method(any())` confirms the real method was called.
-
----
+`@InjectMock` replaces the real CDI bean class-wide (mocks reset between tests). Spy: `@InjectSpy`.
 
 ## 5. Test Profiles — @TestProfile
 
-### Per-test configuration with QuarkusTestProfile
-
 ```java
-import io.quarkus.test.junit.QuarkusTestProfile;
-import java.util.Map;
-
 public class MockExternalServiceProfile implements QuarkusTestProfile {
-    @Override
-    public Map<String, String> getConfigOverrides() {
-        return Map.of(
-            "external.service.url", "http://localhost:8089/mock",
-            "quarkus.datasource.jdbc.url", "jdbc:h2:mem:mocktest"
-        );
-    }
-
-    @Override
-    public String getConfigProfile() {
-        return "mockexternal";  // activates %mockexternal.* properties
+    @Override public Map<String,String> getConfigOverrides() {
+        return Map.of("external.service.url", "http://localhost:8089/mock");
     }
 }
+@QuarkusTest @TestProfile(MockExternalServiceProfile.class)
+public class ExternalIntegrationTest { ... }
 ```
 
-```java
-@QuarkusTest
-@TestProfile(MockExternalServiceProfile.class)
-public class ExternalIntegrationIT {
-    @Test
-    public void testWithMockedExternalService() { /* runs with overridden config */ }
-}
-```
-
-### Alternative CDI Beans per Profile
-
-Override `getEnabledAlternatives()` to return `Set.of(MockPaymentService.class)`, where the mock is an `@Alternative @Priority(1) @ApplicationScoped` subclass of the real service.
-
----
+Alternatively override `getEnabledAlternatives()` to swap in `@Alternative @Priority` mock beans.
 
 ## 6. TestContainers Integration
 
-### Dependency
-
-```xml
-<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-test-containers</artifactId><scope>test</scope></dependency>
-<dependency><groupId>org.testcontainers</groupId><artifactId>postgresql</artifactId><scope>test</scope></dependency>
-```
-
-### QuarkusTestResource for PostgreSQL
-
-```java
-import io.quarkus.test.common.QuarkusTestResourceLifecycleManager;
-import org.testcontainers.containers.PostgreSQLContainer;
-import java.util.Map;
-
-public class PostgresResource implements QuarkusTestResourceLifecycleManager {
-
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
-        .withDatabaseName("testdb").withUsername("test").withPassword("test");
-
-    @Override
-    public Map<String, String> start() {
-        postgres.start();
-        return Map.of(
-            "quarkus.datasource.jdbc.url", postgres.getJdbcUrl(),
-            "quarkus.datasource.username", postgres.getUsername(),
-            "quarkus.datasource.password", postgres.getPassword()
-        );
-    }
-
-    @Override
-    public void stop() { postgres.stop(); }
-}
-```
-
-Apply with `@QuarkusTestResource(PostgresResource.class)` on the test class.
-
-### Dev Services (Zero-Config TestContainers)
-
-Quarkus can auto-start containers without explicit TestResource configuration:
-
+**Dev Services (zero-config, preferred):**
 ```properties
-# src/test/resources/application.properties — just set db-kind
+# src/test/resources/application.properties
 quarkus.datasource.db-kind=postgresql
 quarkus.datasource.devservices.enabled=true
-# No jdbc.url, username, or password needed — auto-configured
-quarkus.hibernate-orm.database.generation=drop-and-create
+quarkus.hibernate-orm.schema-management.strategy=drop-and-create
 ```
+Quarkus auto-starts containers for DBs and brokers with Dev Services support.
 
-This replaces the entire `QuarkusTestResource` pattern for databases and brokers with Dev Services support (PostgreSQL, MySQL, MariaDB, Kafka, Artemis, Redis, etc.).
-
----
+**Explicit QuarkusTestResource:**
+```java
+public class PostgresResource implements QuarkusTestResourceLifecycleManager {
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
+    @Override public Map<String,String> start() {
+        postgres.start();
+        return Map.of("quarkus.datasource.jdbc.url", postgres.getJdbcUrl());
+    }
+    @Override public void stop() { postgres.stop(); }
+}
+// Apply: @QuarkusTest @QuarkusTestResource(PostgresResource.class)
+```
 
 ## 7. Native Mode Testing — @QuarkusIntegrationTest
 
-`@QuarkusIntegrationTest` runs tests against the built artifact (uber-jar or native binary) — not in JVM test mode:
-
 ```java
-import io.quarkus.test.junit.QuarkusIntegrationTest;
-import org.junit.jupiter.api.Test;
-import static io.restassured.RestAssured.*;
-import static org.hamcrest.Matchers.*;
-
 @QuarkusIntegrationTest
 public class NativeOrderResourceIT {
-    @Test
-    public void testHealthEndpoint() {
-        given().when().get("/q/health").then().statusCode(200).body("status", equalTo("UP"));
-    }
+    @Test public void testHealth() { given().when().get("/q/health").then().statusCode(200); }
 }
 ```
 
-**Key differences from `@QuarkusTest`**:
-- `@Inject` does NOT work (test runs outside the application JVM)
-- Only HTTP-based testing (REST Assured, WebSocket clients)
-- Tests the actual packaged artifact — catches native image issues
-- Use with `./mvnw verify -Pnative`
+`@Inject` does NOT work (runs outside app JVM); only HTTP testing. File naming: `*IT.java` + maven-failsafe-plugin. Run with `./mvnw verify -Pnative`.
 
-**File naming convention**: place in `src/test/java` with `*IT.java` suffix; configure `maven-failsafe-plugin` with `integration-test` + `verify` goals.
-
----
-
-## 8. Continuous Testing (quarkus:test mode)
-
-Quarkus provides a built-in continuous testing mode that auto-runs affected tests when source files change:
+## 8. Continuous Testing
 
 ```bash
-./mvnw quarkus:dev     # dev mode; press 'r' re-run, 'o' toggle output, 'p' pause
-./mvnw quarkus:test    # standalone continuous test run
+./mvnw quarkus:dev   # 'r' re-run, 'o' output, 'p' pause
 ```
-
-**Behavior**: only tests affected by the changed source re-run (incremental), in the same JVM as dev mode — extremely fast feedback loop, replaces Arquillian's deploy-test-undeploy cycle.
-
-**Configuration**:
-```properties
-quarkus.test.continuous-testing=enabled
-quarkus.test.include-pattern=.*IT
-quarkus.test.exclude-pattern=.*NativeIT
-```
-
----
+Only tests affected by changed source re-run, in the dev-mode JVM — replaces Arquillian's deploy-test-undeploy cycle.
 
 ## 9. MockitoExtension Strict Stubbing (JUnit 4 → 5)
 
-When migrating from JUnit 4 `MockitoJUnitRunner` to JUnit 5 `@ExtendWith(MockitoExtension.class)`, tests may fail with `UnnecessaryStubbingException` — a behavioral difference:
+JUnit 4 `MockitoJUnitRunner` = **lenient** (unused stubs ignored). JUnit 5 `@ExtendWith(MockitoExtension.class)` = **strict** (unused stubs throw `UnnecessaryStubbingException`).
 
-- **JUnit 4 MockitoJUnitRunner** = **lenient** stubbing (unused stubs silently ignored)
-- **JUnit 5 MockitoExtension** = **strict** stubbing (unused stubs throw `UnnecessaryStubbingException`)
+### Strict-Stubbing Decision Table
 
-### Detection
+| Return type of stubbed method | Situation | Action |
+|---|---|---|
+| **void** (`doNothing().when(m).v()`) | Always | **DELETE unconditionally** — void `doNothing()` stubs cause the exception and have no effect |
+| **Uni<Void>** | Needed by some tests | `lenient().when(m.method()).thenReturn(Uni.createFrom().voidItem())` |
+| Object-returning | Used by ALL tests | Plain `when()` in `@BeforeEach` — correct |
+| Object-returning | Used by SOME tests | `lenient().when()` in `@BeforeEach` |
+| Object-returning | Used by ONE test | Move stub into that test method |
+| Any | ALL stubs target removed EJB/JMS layer | Delete entire `@BeforeEach` |
+| Any | Stub unreachable (guard throws first) | Remove stub from that test |
 
-After replacing the runner, run tests. Any `UnnecessaryStubbingException` identifies stubs set up but never invoked.
+**Partial-use definition**: a `@BeforeEach` stub is "used-by-all" ONLY if EVERY test reaches the stubbed call. If ANY test completes without invoking it → partial-use → `lenient().when()`.
 
-### Common Cause 1: Removed EJB/JMS Layer
-
-When replacing an EJB/JMS layer with CDI mocks, `@BeforeEach` stubs that exclusively set up the removed layer throw the exception. If ALL stubs in a `@BeforeEach` targeted the removed layer, **delete the entire `@BeforeEach` method** — do not add `@MockitoSettings(LENIENT)`. Move failure-scenario stubs into the individual test methods that need them.
-
-### Common Cause 2: Validation Guards
-
-A test stubs a collaborator, but the code-under-test throws before reaching the stubbed call:
-
+**Instance<T> mocking** (common after EJB→CDI):
 ```java
-// Service: throws on null BEFORE reaching inventoryService.reserve(...)
-public Order createOrder(OrderRequest request) {
-    if (request == null || request.getItemId() == null)
-        throw new ValidationException("Invalid request");
-    return inventoryService.reserve(request.getItemId());
-}
-
-// Test — the when() on inventoryService is unnecessary for the null scenario
-@Test
-void testCreateOrder_nullRequest() {
-    when(inventoryService.reserve(any())).thenReturn(new Item());  // UNNECESSARY — remove
-    assertThrows(ValidationException.class, () -> service.createOrder(null));
-}
+lenient().when(instance.iterator()).thenAnswer(inv -> List.of(myImpl).iterator());
+lenient().when(instance.get()).thenReturn(myImpl);
 ```
 
-### Fix: Remove Unreachable Stubs
-
-Delete stubs that set up a method unreachable due to an early exit (null check, validation throw, conditional return). The fixed test keeps only the `assertThrows`.
-
-### Anti-Pattern: Do NOT Apply Class-Wide Lenient Mode
-
+**Common cause — validation guard**: test stubs a collaborator, but code throws before reaching it:
 ```java
-// DO NOT DO THIS — hides dead test code and masks broken assumptions
-@MockitoSettings(strictness = Strictness.LENIENT)
-@ExtendWith(MockitoExtension.class)
-class OrderServiceTest { ... }
+// WRONG: when(inventoryService.reserve(any()))... is unreachable when input null
+// FIXED: drop the stub, keep only assertThrows(ValidationException.class, () -> service.createOrder(null));
 ```
 
-Fix each stub individually instead.
+**Common cause — removed EJB/JMS layer**: if ALL `@BeforeEach` stubs targeted the removed layer, delete the whole `@BeforeEach`.
 
-### Proactive Checklist After Adding MockitoExtension
+**@Transactional on @BeforeEach/@AfterEach is silently ignored** in `@QuarkusTest`. Use `@Inject UserTransaction` with explicit `begin()`/`commit()` for transactional setup.
 
-1. For each test class with `@ExtendWith(MockitoExtension.class)`:
-2. Delete `@BeforeEach` methods whose stubs all target removed EJB/JMS collaborators.
-3. Identify test methods verifying error/validation paths (null args, blank inputs, invalid state).
-4. Check whether those stub collaborator calls that occur AFTER the validation guard.
-5. Remove those stubs — they are never consumed.
-6. Run `./mvnw test` — no `UnnecessaryStubbingException` should remain.
+**Anti-pattern**: do NOT apply class-wide `@MockitoSettings(strictness = Strictness.LENIENT)`. Fix each stub.
 
-### Dependency Note
-
-`mockito-junit-jupiter` (provides `MockitoExtension`) is **NOT** managed by the Quarkus BOM. Always specify an explicit version:
-
-```xml
-<dependency>
-    <groupId>org.mockito</groupId><artifactId>mockito-junit-jupiter</artifactId>
-    <version>5.11.0</version><scope>test</scope>
-</dependency>
-```
-
----
+**Checklist**: (1) delete `@BeforeEach` stubs for removed EJB/JMS; (2) for error-path tests, remove stubs set up after the guard; (3) `./mvnw test` → no `UnnecessaryStubbingException`.
 
 ## 10. JUnit 4→5 Assertion Argument Order
 
-**Critical mechanical fix**: JUnit 4 puts the message String as the FIRST argument; JUnit 5 moves it to the LAST position. Applies to ALL 3-argument assertion methods.
-
-### Before/After Table
+JUnit 4 puts message FIRST; JUnit 5 moves it LAST. Both compile silently when args share a type → silent bug.
 
 | JUnit 4 (message FIRST) | JUnit 5 (message LAST) |
 |---|---|
-| `assertEquals("msg", expected, actual)` | `assertEquals(expected, actual, "msg")` |
-| `assertNotNull("msg", object)` | `assertNotNull(object, "msg")` |
-| `assertNull("msg", object)` | `assertNull(object, "msg")` |
-| `assertTrue("msg", condition)` | `assertTrue(condition, "msg")` |
-| `assertFalse("msg", condition)` | `assertFalse(condition, "msg")` |
-| `assertSame("msg", expected, actual)` | `assertSame(expected, actual, "msg")` |
-| `assertArrayEquals("msg", expected, actual)` | `assertArrayEquals(expected, actual, "msg")` |
+| `assertEquals("msg", exp, act)` | `assertEquals(exp, act, "msg")` |
+| `assertNotNull("msg", obj)` | `assertNotNull(obj, "msg")` |
+| `assertNull("msg", obj)` | `assertNull(obj, "msg")` |
+| `assertTrue("msg", cond)` | `assertTrue(cond, "msg")` |
+| `assertFalse("msg", cond)` | `assertFalse(cond, "msg")` |
+| `assertSame("msg", exp, act)` | `assertSame(exp, act, "msg")` |
+| `assertNotSame("msg", exp, act)` | `assertNotSame(exp, act, "msg")` |
 
-2-argument assertions (no message) are unchanged.
-
-### Detection Command
+**⚠️ 2-arg exemption**: 2-arg overloads (no String message) are identical in JUnit 4/5 — do NOT reorder. Only 3-arg calls change.
 
 ```bash
-grep -rn --include='*.java' 'assert\(Not\)\?Null\|assert\(True\|False\|Equals\)' src/test/ | grep '".*"\s*,'
+# Detect message-first (string literal as first arg)
+grep -rn --include='*.java' 'assertEquals("\|assertNotNull("\|assertNull("\|assertTrue("\|assertFalse("\|assertSame("\|assertNotSame("' src/test/
 ```
 
-### WARNING: Silent Semantic Bugs
+## 11. assertThrows Lambda Isolation
 
-When both arguments are the same type (e.g., both String), swapping the order **compiles without error** but tests the wrong thing:
-
+Lambda body must contain ONLY the single expected-throwing call; extract setup before it.
 ```java
-// JUnit 4
-assertEquals("Expected ACTIVE status", "ACTIVE", order.getStatus());
-// CORRECT JUnit 5 migration — message moves LAST:
-assertEquals("ACTIVE", order.getStatus(), "Expected ACTIVE status");
+// WRONG: assertThrows(X.class, () -> { when(mock.validate(any())).thenReturn(false); service.process(in); });
+// CORRECT:
+when(mock.validate(any())).thenReturn(false);
+assertThrows(ValidationException.class, () -> service.process(input));
 ```
+**Capture for property assertions**: `SomeException ex = assertThrows(SomeException.class, () -> service.process(bad)); assertEquals("INVALID_FORMAT", ex.getErrorCode());`
 
-Leaving the JUnit-4 order in JUnit 5 would assert `expected="Expected ACTIVE status", actual="ACTIVE"` — a silent bug.
+**Dead-code removal on `@Test(expected=...)` → assertThrows conversion**: remove unreachable stubs before the throw and dead post-throw statements.
 
----
+**MINIMIZE CHANGES for try/catch/fail**: do NOT convert when the catch block asserts on **multiple** exception fields — the conversion loses clarity. Only convert when the sole intent is verifying a throw.
 
-## 11. CDI @ConfigProperty in Unit Tests
+## 12. CDI @ConfigProperty in Unit Tests
 
-CDI `@ConfigProperty` fields are `null` (or `0` for primitives) in plain unit tests where no CDI container runs (tests using `new MyClass()` or `@ExtendWith(MockitoExtension.class)` without `@QuarkusTest`). The `defaultValue` attribute is only applied by the MicroProfile Config runtime — NOT in plain unit tests.
-
-**Fix Option A — reflective field injection in `@BeforeEach`** (unit tests):
+`@ConfigProperty` fields are `null`/`0` in plain unit tests (no CDI container); `defaultValue` is applied only by the MicroProfile runtime. Fixes: (A) reflective field injection in `@BeforeEach`; (B) convert to `@QuarkusTest`; (C) field initializer matching `defaultValue` (CDI overwrites it, plain `new` keeps fallback).
 ```java
-@BeforeEach
-void setup() throws Exception {
-    Field f = MyService.class.getDeclaredField("timeout");
-    f.setAccessible(true);
-    f.set(service, 30);
+@BeforeEach void setup() throws Exception {
+    Field f = MyService.class.getDeclaredField("timeout"); f.setAccessible(true); f.set(service, 30);
 }
 ```
 
-**Fix Option B — convert to `@QuarkusTest`** (integration tests verifying config-dependent behavior): `@Inject MyService service;` — `@ConfigProperty` is applied by the runtime.
+## 13. @TestSecurity CLASS-level Placement
 
-**Fix Option C — field initializer matching defaultValue** (see troubleshooting-pitfalls.md): initialize the field to the same literal as `defaultValue`; CDI overwrites it after construction, plain `new` keeps the fallback.
+If ANY `@BeforeEach` invokes a `@RolesAllowed`-protected method (e.g. data setup via service layer), `@TestSecurity` MUST be at CLASS level — method-level does not cover `@BeforeEach`:
+```java
+@QuarkusTest
+@TestSecurity(user = "admin", roles = "admin")   // covers @BeforeEach
+public class OrderServiceTest {
+    @BeforeEach void setup() { orderService.createOrder(...); }  // runs with admin identity
+}
+```
+Method-level `@TestSecurity` can still override for specific tests.
+
+## 14. REQUIRES_NEW Data Isolation with UserTransaction
+
+```java
+@Inject UserTransaction utx; @Inject EntityManager em;
+
+@Test void testBatchCreatesAuditInNewTx() throws Exception {
+    utx.begin();
+    batchService.processBatch(items);  // internally REQUIRES_NEW for audit
+    utx.rollback();                    // roll back outer — audit should survive
+    utx.begin();
+    long n = em.createQuery("SELECT COUNT(a) FROM AuditLog a", Long.class).getSingleResult();
+    utx.commit();
+    assertTrue(n > 0, "Audit in REQUIRES_NEW survives outer rollback");
+}
+```
+
+## 15. H2 Test Datasource Override Template
+
+If main `application.properties` sets an explicit `quarkus.hibernate-orm.dialect`, the test override MUST set BOTH `db-kind=h2` AND `dialect=H2Dialect` — changing `db-kind` alone does not cancel an explicit dialect.
+```properties
+%test.quarkus.datasource.db-kind=h2
+%test.quarkus.datasource.jdbc.url=jdbc:h2:mem:test;DB_CLOSE_DELAY=-1
+%test.quarkus.hibernate-orm.dialect=org.hibernate.dialect.H2Dialect
+%test.quarkus.hibernate-orm.schema-management.strategy=drop-and-create
+```
+```xml
+<dependency><groupId>io.quarkus</groupId><artifactId>quarkus-jdbc-h2</artifactId><scope>test</scope></dependency>
+```
+Use `schema-management.strategy` (not deprecated `database.generation`). If main config omits dialect (auto-detect), test override only needs `db-kind=h2`. If `import.sql` supplies test data, omit explicit ID columns (H2 IDENTITY collision).
+
+## 16. Uni Mock Null-Return NPE
+
+Mockito's default return for `Uni<T>` is `null` → `.subscribe()`/`.await()` NPEs. Always stub explicitly:
+```java
+when(service.findItem(any())).thenReturn(Uni.createFrom().item(new Item("test")));
+when(service.deleteItem(any())).thenReturn(Uni.createFrom().voidItem());
+when(service.findItem(any())).thenReturn(Uni.createFrom().failure(new NotFoundException()));
+```
+
+## 17. Effectively-Final Variables in assertThrows
+
+Variables captured by the lambda must be effectively final. Field access (populated in `@BeforeEach`) is safe; local vars need single assignment:
+```java
+final String input = buildInput();
+assertThrows(ValidationException.class, () -> service.process(input));
+```
+
+## 18. Mixed @Test(expected) + try/catch Idioms
+
+Convert to `assertThrows` ONLY when the catch does simple type-checking:
+```java
+// BEFORE: @Test(expected=ValidationException.class) { try { service.process(bad); } catch (IOException e) { fail(...); } }
+// AFTER:
+@Test void testInvalid() { assertThrows(ValidationException.class, () -> service.process(badInput)); }
+```
+If the catch asserts on multiple exception properties, KEEP the try/catch (see Section 11 MINIMIZE CHANGES).
+
+## 19. Qute Template Mock Chain
+
+Mock the full fluent chain for injected `io.quarkus.qute.Template`:
+```java
+@InjectMock Template emailTemplate;
+@BeforeEach void setup() {
+    TemplateInstance instance = mock(TemplateInstance.class);
+    when(emailTemplate.data(anyString(), any())).thenReturn(instance);
+    when(instance.data(anyString(), any())).thenReturn(instance);
+    when(instance.render()).thenReturn("<html>rendered</html>");
+}
+```
+
+## 20. REST Assured Dual root/rest Path
+
+With `quarkus.http.root-path=/app` and `quarkus.rest.path=/api`: REST Assured `basePath=/app`; request paths include the REST path but NOT root-path (`.get("/api/orders")` → hits `/app/api/orders`). Confirmed by [Quarkus #28001](https://github.com/quarkusio/quarkus/issues/28001). Non-application paths (`/q/health`): use `@TestHTTPResource("/q/health")` URL injection to bypass basePath.
+
+## 21. Empty @BeforeEach Cleanup
+
+After removing all stubs from a `@BeforeEach` (strict-stubbing fixes / removed EJB layer), delete the empty method — do not leave `@BeforeEach void setup() {}`.
+
+## 22. *IT.java → *Test.java Mandatory Rename
+
+| Current | Target exists? | Action |
+|---|---|---|
+| `*IT.java` | no `*Test.java` for same class | rename → `*Test.java` |
+| `*IT.java` | `*Test.java` exists | rename → `*IntegrationTest.java` |
+| `*Test.java` | — | skip |
+
+Maven Surefire excludes `*IT.java` — migrated tests would be silently never run by `mvn test`. **Exception**: keep `*IT.java` ONLY for `@QuarkusIntegrationTest` (native, Failsafe).
+
+## 23. All-@Inject-Field Audit
+
+After migrating to `@ExtendWith(MockitoExtension.class)` / `@QuarkusTest`, verify EVERY `@Inject` field in the production class has a corresponding `@Mock`/`@InjectMock`/`@Inject`/reflective injection. Missing → NPE where production code uses the field. Common miss: fields added during EJB→CDI (e.g. new `@Inject EntityManager`) with no mock in existing tests.
+
+## 24. @BeforeEach Config Injection Audit
+
+When `@BeforeEach` injects config/state, check it does not invalidate negative-path assertions. Fix: move config injection into the tests that need it, or set `null` explicitly in the negative test.
+
+## 25. Generic Mock Type Resolution (Emitter<T>)
+
+For generic types like `Emitter<T>`, Mockito resolves by **field name** (type erasure). Multiple `@Mock Emitter<?>` fields must match the production field names exactly, else silent null injection:
+```java
+// production: @Channel("orders-out") Emitter<String> orderEmitter; @Channel("audit-out") Emitter<String> auditEmitter;
+@Mock Emitter<String> orderEmitter;   // names MUST match
+@Mock Emitter<String> auditEmitter;
+@InjectMocks OrderService service;
+```
 
 ---
 
@@ -554,29 +382,31 @@ void setup() throws Exception {
 
 | Step | Action | Verify |
 |---|---|---|
-| 1 | Remove Arquillian dependencies from pom.xml | `grep -rn "arquillian\|shrinkwrap" pom.xml` empty |
-| 2 | Add `quarkus-junit5` + `rest-assured` | Compile passes |
-| 3 | Replace `@RunWith(Arquillian.class)` with `@QuarkusTest` | `grep -rn "Arquillian" src/test/` empty |
+| 1 | Remove Arquillian deps | `grep -rn "arquillian\|shrinkwrap" pom.xml` empty |
+| 2 | Add `quarkus-junit` + `rest-assured` (BOM-managed) | Compile passes |
+| 3 | `@RunWith(Arquillian.class)` → `@QuarkusTest` | `grep -rn "Arquillian" src/test/` empty |
 | 4 | Delete ALL `@Deployment` methods | `grep -rn "ShrinkWrap\|@Deployment" src/test/` empty |
-| 5 | Replace `@ArquillianResource URL` with `@TestHTTPResource` | No URL management code |
-| 6 | Convert JAX-RS Client calls to REST Assured | Cleaner test code |
-| 7 | Migrate JUnit 4 → 5 assertions (swap message arg) | `org.junit.Test` → `org.junit.jupiter.api.Test` |
-| 8 | Create `src/test/resources/application.properties` with H2 config | Test datasource configured |
-| 9 | Delete `arquillian.xml`, `test-ds.xml` | Files removed |
-| 10 | Remove unnecessary stubs (MockitoExtension strict mode) | No `UnnecessaryStubbingException` |
-| 11 | Run `./mvnw clean test` | ALL tests pass |
+| 5 | `@ArquillianResource URL` → `@TestHTTPResource` | no URL management |
+| 6 | JAX-RS Client → REST Assured | cleaner tests |
+| 7 | JUnit 4→5 assertions (swap message — 3-arg ONLY) | imports updated |
+| 8 | `src/test/resources/application.properties` H2 config | test DS configured |
+| 9 | Delete `arquillian.xml`, `test-ds.xml` | removed |
+| 10 | Remove unnecessary stubs (strict mode) | no `UnnecessaryStubbingException` |
+| 11 | All-@Inject-field audit | every @Inject has a test mock |
+| 12 | Rename `*IT.java` → `*Test.java` | tests appear in surefire |
+| 13 | `./mvnw clean test` | ALL pass |
 
 ## JUnit 4 → 5 Quick Reference
 
 | JUnit 4 | JUnit 5 | Notes |
 |---|---|---|
-| `@RunWith(...)` | `@ExtendWith(...)` | Not needed with `@QuarkusTest` |
-| `@RunWith(MockitoJUnitRunner.class)` | `@ExtendWith(MockitoExtension.class)` | Strict stubbing — see Section 9 |
-| `@Test` (org.junit) | `@Test` (org.junit.jupiter.api) | Different import |
+| `@RunWith(...)` | `@ExtendWith(...)` | not needed with `@QuarkusTest` |
+| `@RunWith(MockitoJUnitRunner.class)` | `@ExtendWith(MockitoExtension.class)` | strict stubbing — Section 9 |
+| `@Test` (org.junit) | `@Test` (org.junit.jupiter.api) | different import |
 | `@Before` / `@After` | `@BeforeEach` / `@AfterEach` | |
 | `@BeforeClass` / `@AfterClass` | `@BeforeAll` / `@AfterAll` | |
-| `@Ignore` | `@Disabled` | Do NOT add as migration shortcut — fix the test |
-| `@Test(expected=X.class)` | `assertThrows(X.class, () -> {...})` | |
-| `Assert.assertEquals(msg, exp, act)` | `assertEquals(exp, act, msg)` | Message moves LAST — see Section 10 |
+| `@Ignore` | `@Disabled` | do NOT add as migration shortcut — fix the test |
+| `@Test(expected=X.class)` | `assertThrows(X.class, () -> {...})` | lambda = only the throwing call (Section 11) |
+| `Assert.assertEquals(msg, exp, act)` | `assertEquals(exp, act, msg)` | message LAST — 3-arg ONLY |
 | `@Rule ExpectedException` | `assertThrows(...)` | |
 | `@Category(...)` | `@Tag(...)` | |
